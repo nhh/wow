@@ -293,6 +293,55 @@ sendList.Sort(...); // absteigend nach Score
 
 Der R-Tree schneidet den Suchraum auf O(log N + k) Kandidaten, der FOV-Filter ist O(k) mit k ≪ N. Keine eigene Datenstruktur nötig.
 
+#### 5e. Skalierbarkeitsanalyse
+
+**Geometrische Auswirkung des FOV-Bias:**
+
+Der effektive Sichtradius variiert je nach Winkel zur Blickrichtung:
+
+```
+r_raw(θ) = R × (0.3 + 0.35 × (cos(θ) + 1))
+
+θ=0°   (direkt vorne):  r = R × 1.00 = 100m
+θ=45°:                  r = R × 0.90 =  90m
+θ=90°  (seitlich):      r = R × 0.65 =  65m
+θ=135°:                 r = R × 0.40 =  40m
+θ=180° (direkt hinten): r = R × 0.30 =  30m
+```
+
+Integration über alle Winkel ergibt die sichtbare Fläche:
+
+```
+A_fov  = ∫₀²π r(θ)²/2 dθ = R²π × 0.484
+A_kreis = R²π
+
+→ FOV-Bias reduziert die sichtbare Fläche auf ~48 % des reinen Radius-Kreises.
+  Jeder Client sieht im Schnitt halb so viele Entities wie bei reinem Distanz-Culling.
+```
+
+**Kumulativer Skalierungsgewinn** (Gigabit-Server, ViewRadius=100m, 1 km² Welt, 1.000 Partikel):
+
+| Stufe | Sichtbare Spieler/Client (N=1.000) | Spieler-BW | Partikel-BW | Gesamt @20Hz | Limit |
+|---|---|---|---|---|---|
+| Broadcast (kein Culling) | 999 | O(N²) | O(N) | ~300 MB/s | **~350 Sessions** |
+| Radius-Culling (R=100m) | ~31 | O(N·k) | O(N) | ~80 MB/s | **~2.000 Sessions** |
+| Radius + FOV-Bias | ~15 | O(N·k/2) | O(N) | ~67 MB/s | **~3.500 Sessions** |
+| Radius + FOV + Partikel-Culling | ~15 | O(N·k/2) | O(N·0.48) | ~38 MB/s | **~6.000+ Sessions** |
+
+Partikel-Culling wendet denselben FOV-gefilterten Radius auf den Partikel-Snapshot an: jeder Client bekommt nur Partikel im sichtbaren Bereich, was die Partikel-Bandbreite ebenfalls auf ~48 % reduziert.
+
+**Stufenweise Skalierungshebel zusammengefasst:**
+
+```
+Broadcast → Radius-Culling:      ~6×  (O(N²) → O(N·k))
++ FOV-Bias:                      ~2×  (k → k/2)
++ Partikel-Culling:              ~2×  (13 KB → 6 KB/Client)
+────────────────────────────────────────────────────────
+Gesamtgewinn:                   ~24×  gegenüber reinem Broadcast
+```
+
+Die Skalierungsgrenze liegt danach nicht mehr bei der Bandbreite sondern beim CPU-Overhead des R-Tree-Lookups pro Session (O(N log N) pro Tick) und beim Kernel-`writev()`-Overhead für viele kleine UDP-Pakete.
+
 ---
 
 ## 6. World Partitioning
