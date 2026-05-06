@@ -41,8 +41,9 @@ public class GameLoop(LiteNetServer server, int particleCount = Framing.Particle
         foreach (var s in sessions)
         {
             CInputState? latest = null;
-            while (s.TryDequeueInput() is { } input) latest = input;
-            if (latest is not null) ApplyInput(s, latest);
+            bool anyJump = false;
+            while (s.TryDequeueInput() is { } input) { latest = input; anyJump |= input.Jump; }
+            if (latest is not null) ApplyInput(s, latest, anyJump);
         }
 
         _particles.Update(_tick);
@@ -77,7 +78,7 @@ public class GameLoop(LiteNetServer server, int particleCount = Framing.Particle
     private const float Gravity    = 20f;
     private const float JumpSpeed  = 9f;
 
-    private static void ApplyInput(Session s, CInputState input)
+    private static void ApplyInput(Session s, CInputState input, bool jump)
     {
         float fwd = 0, str = 0;
         if (input.Forward)  fwd += 1;
@@ -96,7 +97,7 @@ public class GameLoop(LiteNetServer server, int particleCount = Framing.Particle
         s.Z   += dz * Framing.MoveSpeed * Framing.TickDelta;
         s.Yaw  = input.Yaw;
 
-        if (input.Jump && s.Y <= 0f) s.VelocityY = JumpSpeed;
+        if (jump && s.Y <= 0f) s.VelocityY = JumpSpeed;
         s.VelocityY -= Gravity * Framing.TickDelta;
         s.Y         += s.VelocityY * Framing.TickDelta;
         if (s.Y < 0f) { s.Y = 0f; s.VelocityY = 0f; }
