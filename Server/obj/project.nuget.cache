@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "dgSpecHash": "MI8mZyhVM5Y=",
+  "success": true,
+  "projectFilePath": "C:\\Users\\nikla\\Projects\\MmorpgPoc\\Server\\Server.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\nikla\\.nuget\\packages\\litenetlib\\2.1.3\\litenetlib.2.1.3.nupkg.sha512",
+    "C:\\Users\\nikla\\.nuget\\packages\\memorypack\\1.21.4\\memorypack.1.21.4.nupkg.sha512",
+    "C:\\Users\\nikla\\.nuget\\packages\\memorypack.core\\1.21.4\\memorypack.core.1.21.4.nupkg.sha512",
+    "C:\\Users\\nikla\\.nuget\\packages\\memorypack.generator\\1.21.4\\memorypack.generator.1.21.4.nupkg.sha512"
+  ],
+  "logs": []
+}
