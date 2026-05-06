@@ -342,9 +342,202 @@ Gesamtgewinn:                   ~24×  gegenüber reinem Broadcast
 
 Die Skalierungsgrenze liegt danach nicht mehr bei der Bandbreite sondern beim CPU-Overhead des R-Tree-Lookups pro Session (O(N log N) pro Tick) und beim Kernel-`writev()`-Overhead für viele kleine UDP-Pakete.
 
+#### 5f. Optimierungsrangliste
+
+Alle Techniken sortiert nach Bandbreiten-Gewinn. Die ersten fünf sind reine Format- oder Konfigurationsänderungen — höchstes Impact/Aufwand-Verhältnis.
+
+| Rang | Optimierung | Gewinn | Aufwand |
+|---|---|---|---|
+| 1 | Radius-Culling | ~6× | niedrig |
+| 2 | Update-Rate-LOD | ~5× | niedrig |
+| 3 | Dead Reckoning | ~3× | mittel |
+| 4 | FOV-Bias | ~2× | niedrig |
+| 5 | Quantisierung (float32→int16) | ~2× | niedrig |
+| 6 | Partikel-Culling (FOV+Radius) | ~2× | niedrig |
+| 7 | Packet Coalescing | ~2× | mittel |
+| 8 | Okklusion / PVS | ~2–4× (nur indoor) | hoch |
+| 9 | Prioritäts-Aging | Qualität, kein BW-Gewinn | niedrig |
+
+**Kumulativ (Rang 1–7): ~700–2.000× gegenüber reinem Broadcast.**
+
 ---
 
-## 6. World Partitioning
+#### 5g. Update-Rate-LOD (Rang 2)
+
+Binäres senden/nicht-senden ist zu grob. Drei Tiers basierend auf dem Relevancy-Score:
+
+```
+score > 0.7  → 20 Hz  (jeder Tick, 50ms)     — Nahkampf, direkt im Blickfeld
+score > 0.3  →  5 Hz  (alle 4 Ticks, 200ms)  — Mitteldistanz, seitlich
+score > 0.0  →  1 Hz  (alle 20 Ticks, 1s)    — Peripherie, kaum sichtbar
+score = 0.0  →  0 Hz  — kein Update
+```
+
+Server hält pro (Observer, Entity)-Paar einen `lastSentTick`-Counter. Im Tick-Loop:
+
+```csharp
+foreach (var (entity, score) in sendList)
+{
+    int interval = score > 0.7f ? 1 : score > 0.3f ? 4 : 20;
+    if ((_tick - lastSentTick[observer.Id, entity.Id]) < interval) continue;
+    lastSentTick[observer.Id, entity.Id] = _tick;
+    Enqueue(observer, entity);
+}
+```
+
+Bei einer typischen Spielerverteilung (wenige im Nahkampf, viele auf Mitteldistanz, viele peripher) sinkt die durchschnittliche Senderate pro Entity von 20 Hz auf ~3–4 Hz — ein ~5× Gewinn ohne jede Sichtbarkeitsänderung.
+
+---
+
+#### 5h. Dead Reckoning (Rang 3)
+
+Anstatt jede Tick-Position zu senden, extrapoliert der Client die Position selbst aus dem letzten bekannten Velocity-Vektor. Der Server sendet nur dann ein Update, wenn die tatsächliche Position von der extrapolierten Prediction um mehr als einen Schwellwert abweicht.
+
+```
+Server hält pro Entity: lastSentPos, lastSentVelocity, lastSentTick
+
+Pro Tick:
+  predicted = lastSentPos + lastSentVelocity × (currentTick - lastSentTick) × dt
+  error     = |actualPos - predicted|
+
+  if error > threshold:
+      Sende Update (neue Pos + Velocity)
+      lastSentPos      = actualPos
+      lastSentVelocity = actualVelocity
+      lastSentTick     = currentTick
+```
+
+Threshold-Wahl ist ein Tradeoff: 0.1m → kaum sichtbar, aber häufige Updates bei Kurven; 0.5m → sichtbares Gummiband-Effekt bei Richtungswechseln.
+
+**Gewinn nach Bewegungstyp:**
+
+```
+Stationär (AFK, Händler):    0 Updates/s    (100% Reduktion)
+Geradlinig laufend:          ~0.5 Updates/s (97% Reduktion bei threshold=0.1m)
+Kurven, Kampf:               ~5–10 Updates/s (50–75% Reduktion)
+```
+
+Dead Reckoning und Update-Rate-LOD sind orthogonal und kumulieren: LOD bestimmt das maximale Sendeintervall, Dead Reckoning ob innerhalb dieses Intervalls ein Update nötig ist.
+
+---
+
+#### 5i. Quantisierung (Rang 5)
+
+Positionen als `float32` (4 Byte) sind für die meisten MMO-Zonen übergenau. Für eine Zone von ±500m Ausdehnung reicht `int16` mit 0.01m Auflösung:
+
+```
+float32  X,Y,Z  = 12 Byte  (±3.4×10³⁸m, 7 Dezimalstellen)
+int16    X,Y,Z  =  6 Byte  (±327.68m bei Faktor 100, 2cm Auflösung)
+```
+
+Wire-Format-Konversion, kein Einfluss auf Server-Physik (die rechnet weiterhin in float32):
+
+```csharp
+// Encode
+short qx = (short)(pos.X * 100f);
+short qy = (short)(pos.Y * 100f);
+short qz = (short)(pos.Z * 100f);
+
+// Decode (Client)
+float x = qx / 100f;
+float y = qy / 100f;
+float z = qz / 100f;
+```
+
+Yaw als `byte` (1 Byte statt 4): 256 Schritte = 1.4° Auflösung — für visuelle Darstellung ausreichend.
+
+```
+Vorher: PlayerSnapshot = 4 (id) + 4+4+4 (xyz float) + 4 (yaw) = 20 Byte
+Nachher:                = 4 (id) + 2+2+2 (xyz int16) + 1 (yaw byte) = 11 Byte
+```
+
+45% kleinere Snapshots, kein Algorithmenwechsel, keine Latenzänderung.
+
+---
+
+#### 5j. Partikel-Culling (Rang 6)
+
+Partikel sind deterministisch und der Server kennt ihre Position. Denselben FOV-gefilterten Radius-Check den wir für Spieler verwenden, wenden wir auch auf Partikel an: jeder Client bekommt nur Partikel die in seinem sichtbaren Bereich liegen.
+
+```csharp
+foreach (var particle in allParticles)
+{
+    float dx = particle.X - observer.X;
+    float dz = particle.Z - observer.Z;
+    float rawDist = MathF.Sqrt(dx*dx + dz*dz);
+    if (rawDist > ParticleRadius) continue;
+
+    float dot = MathF.Sin(observer.Yaw) * (dx/rawDist)
+              + MathF.Cos(observer.Yaw) * (dz/rawDist);
+    float effectDist = rawDist / (0.3f + 0.7f * (dot + 1f) / 2f);
+    if (effectDist > ParticleRadius) continue;
+
+    visibleParticles.Add(particle);
+}
+```
+
+Da die FOV-Bias-Fläche ~48% des Kreises ist, reduziert sich die durchschnittliche Partikelzahl pro Client auf ~480 statt 1.000 — die größte einzelne Bandbreitenkomponente wird halbiert.
+
+---
+
+#### 5k. Packet Coalescing (Rang 7)
+
+Ohne Coalescing: pro Client und Tick gehen mehrere kleine UDP-Pakete raus (eines pro Entity-Gruppe, eines für Partikel, eines für Events). Jedes `send()` ist ein Kernel-Syscall mit ~1–5 µs Overhead.
+
+Mit Coalescing: alle Updates eines Ticks für einen Client werden in ein einziges UDP-Paket gebatcht, solange es unter MTU (1.400 Byte) bleibt. Bei größerem Volumen: minimale Paketanzahl per Bin-Packing.
+
+```
+Ohne Coalescing, N=500 Sessions, k=15 visible entities:
+  500 × (15 entity-pakete + 1 partikel-paket) = 8.000 Syscalls/Tick
+  Bei 20 Hz: 160.000 Syscalls/s → ~800 µs Kernel-Overhead/Tick
+
+Mit Coalescing:
+  500 × 1–2 Pakete = 500–1.000 Syscalls/Tick
+  Bei 20 Hz: 10.000–20.000 Syscalls/s → ~100 µs Kernel-Overhead/Tick
+```
+
+LiteNetLib unterstützt kein natives Coalescing — müsste als eigener Send-Buffer pro Session implementiert werden, der am Tick-Ende geflusht wird.
+
+---
+
+#### 5l. Okklusion / PVS (Rang 8)
+
+FOV-Bias ignoriert Geometrie. Ein Spieler hinter einer dicken Burgmauer ist trotzdem im FOV-Kegel sichtbar und bekommt Updates — obwohl er physisch nicht gesehen werden kann.
+
+**Potentially Visible Set (PVS):** Die Zone wird offline in konvexe Sektoren aufgeteilt. Für jedes Sektorpaar wird berechnet, ob Sichtverbindung besteht. Das Ergebnis ist eine Bitmatrix `visible[sectorA][sectorB]`.
+
+```
+Offline (Build-Zeit):
+  for each sector A:
+    for each sector B:
+      visible[A][B] = RaycastConvexHull(A, B).HasLineOfSight
+
+Online (pro Tick, O(1)):
+  observerSector = GetSector(observer.X, observer.Z)
+  candidateSector = GetSector(candidate.X, candidate.Z)
+  if not visible[observerSector][candidateSector]: skip
+```
+
+Für Outdoor-Zonen mit wenig Geometrie: kaum Gewinn. Für Dungeons, Städte mit Gebäuden, Höhlen: 40–70% der Entities sofort eliminiert bevor R-Tree und FOV-Filter überhaupt laufen.
+
+PVS ist die Technik aus Quake (1996) und wird in jedem modernen Shooter verwendet. Die Offline-Berechnung ist teuer (Minuten bis Stunden je nach Zonengröße), der Runtime-Overhead ist O(1) pro Kandidatenpaar.
+
+---
+
+#### 5m. Prioritäts-Aging (Rang 9)
+
+Wenn das Bandwidth-Budget eines Clients erschöpft ist, werden niedrig-scorende Entities übersprungen. Ohne Aging können periphere Entities dauerhaft keine Updates bekommen — der Spieler sieht sie eingefroren.
+
+Aging erhöht den Score einer Entity pro ausgelassenem Tick um einen kleinen Betrag:
+
+```csharp
+float age = (_tick - lastSentTick[observer.Id, entity.Id]) * AgingRate;
+float adjustedScore = baseScore + age; // AgingRate z.B. 0.01 pro Tick
+```
+
+Bei `AgingRate = 0.01` und `baseScore = 0.1` erreicht eine periphere Entity nach 90 ausgelassenen Ticks (4.5s) denselben Score wie eine mittelnahe Entity und wird garantiert gesendet. Verhindert visuelle Artefakte ohne Bandbreiten-Mehrkosten.
+
+---
 
 ### Entscheidung: Seamless World mit Zone-Servern + Cross-Zone Entity Presence
 
