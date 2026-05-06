@@ -7,11 +7,13 @@
 
 ## 1. Transport Layer
 
-### Entscheidung: QUIC (nicht TCP + UDP)
+### Entscheidung: LiteNetLib (UDP) — QUIC zurückgestellt
+
+> **POC-Stand:** `System.Net.Quic` wurde evaluiert und verworfen. MsQuic auf Windows puffert `WriteAsync` intern und ignoriert `FlushAsync()` auf bidirektionalen Streams — Server-seitiges `ReadExactlyAsync` blockiert dauerhaft. Mehrere Workarounds (unidirektionale Streams, zwei bidirektionale) scheiterten an Deadlocks beim Accept-Loop. Ersatz: **LiteNetLib 2.1.3** (message-oriented UDP, kein Buffering-Problem).
 
 Klassische MMOs nutzen TCP für zuverlässige Pakete (State, Events) und einen separaten UDP-Socket für Positionen. Das erfordert doppeltes NAT-Traversal, zwei Verbindungen pro Client, und eigene Reliability-Layer über UDP.
 
-**QUIC löst das strukturell:**
+**Ziel-Architektur (QUIC) — für Produktion:**
 
 | Feature | TCP+UDP | QUIC |
 |---------|---------|------|
@@ -21,17 +23,15 @@ Klassische MMOs nutzen TCP für zuverlässige Pakete (State, Events) und einen s
 | Connection Migration | ✗ | ✓ (IP-Wechsel transparent) |
 | Verschlüsselung | Optional | Immer (TLS 1.3) |
 
-**Kanalstruktur pro Client:**
+**POC-Kanalstruktur (LiteNetLib):**
 
 ```
-QUIC Connection
-├─ Stream 0  (reliable, ordered)   → Login, Character, Inventory, Chat
-├─ Stream 1  (reliable, ordered)   → Logical Events (Damage, Cast, Death)
-├─ Stream 2  (reliable, ordered)   → World State Bootstrap (Zone Login)
-└─ Datagram  (unreliable)          → Positions-Snapshots, Movement-Input
+LiteNetLib Connection (UDP, ein Socket)
+├─ DeliveryMethod.Unreliable        → CInputState (Movement-Input)
+└─ DeliveryMethod.ReliableOrdered   → SWorldSnapshot, SParticleSnapshot, SWelcome
 ```
 
-Position geht unreliable. Ein verlorener Positions-Snapshot ist irrelevant — der nächste kommt in 50ms. Events (Schaden, Tod, Loot) gehen reliable, weil sie kausal sind und nie verloren gehen dürfen.
+Position-Snapshots gehen aktuell reliable — im POC akzeptabel. Für Produktion: Snapshots auf Unreliable umstellen, Events auf separatem ReliableOrdered-Kanal.
 
 **Serialisierung: MemoryPack + raw structs**
 
@@ -466,7 +466,8 @@ Silk.NET ist ein Low-Level-.NET-Binding für Vulkan, OpenGL, GLFW, OpenAL und we
 | Rendering | `Silk.NET.Vulkan` |
 | Windowing / Input | `Silk.NET.Windowing` + `Silk.NET.Input` (GLFW) |
 | Audio | `Silk.NET.OpenAL` |
-| QUIC Transport | `System.Net.Quic` (.NET 9, nutzt msquic) |
+| Transport (POC) | `LiteNetLib 2.1.3` (UDP, message-oriented, kein MsQuic-Bug) |
+| Transport (Prod) | `System.Net.Quic` (.NET 10, nutzt msquic) |
 | Serialisierung (variabel) | `MemoryPack` (NuGet) |
 | Serialisierung (fix/blittable) | `MemoryMarshal` (BCL, kein NuGet) |
 | ECS | `Arch` (Chunk-basiert, SIMD-kompatibel) |
@@ -497,7 +498,7 @@ Silk.NET ist ein Low-Level-.NET-Binding für Vulkan, OpenGL, GLFW, OpenAL und we
                            │
 ┌──────────────────────────▼──────────────────────────────────┐
 │                   Network Layer                              │
-│  System.Net.Quic — Streams + Datagrams                      │
+│  LiteNetLib (UDP) — Unreliable Inputs, Reliable Snapshots   │
 │  Datagram-Jitter-Buffer, Delta-from-ACK, Reconnect          │
 │  MemoryPack (Events) + MemoryMarshal (Snapshots)            │
 └─────────────────────────────────────────────────────────────┘
@@ -761,7 +762,8 @@ Bei ~2.000+ aktiven Entities in einer Zone wird der SQLite-Commit für Positions
 
 | Bereich | Gewählt | Verworfen | Hauptgrund |
 |---------|---------|-----------|------------|
-| Transport | QUIC | TCP+UDP | Ein Socket, 0-RTT, keine HOL-Blocks |
+| Transport (POC) | LiteNetLib/UDP | System.Net.Quic | MsQuic-Buffering-Bug auf Windows blockiert bidirektionale Streams |
+| Transport (Prod) | QUIC | TCP+UDP | Ein Socket, 0-RTT, keine HOL-Blocks |
 | Serialisierung (variabel) | MemoryPack | FlatBuffers / Protobuf | .NET-native, Source-Gen, schneller auf .NET |
 | Serialisierung (fix) | MemoryMarshal (BCL) | MemoryPack | Blittable Structs brauchen keinen Serializer |
 | Entity Model | ECS | OOP-Hierarchie | Cache-Lokalität, keine God-Objects |
@@ -779,7 +781,7 @@ Bei ~2.000+ aktiven Entities in einer Zone wird der SQLite-Commit für Positions
 | Client Stack | Silk.NET (Vulkan, GLFW, OpenAL) | Unity / Unreal | Low-Level-Kontrolle, kein Engine-Overhead |
 | Client Rendering | Silk.NET.Vulkan | OpenGL / DX11 | Bindless, GPU-driven, Cross-Platform |
 | Client ECS | Arch | Custom / OOP | Chunk-Layout, kein GC-Druck, SIMD-kompatibel |
-| Client Transport | System.Net.Quic | TCP Socket | Streams + Datagrams in einer Connection |
+| Client Transport (POC) | LiteNetLib | System.Net.Quic | MsQuic-Bug auf Windows; LiteNetLib message-oriented, kein Buffering |
 | GC-Strategie | Allocation-freier Tick + NoGCRegion | Managed Allocs | Frame-Hitches durch GC eliminieren |
 
 ---
@@ -791,7 +793,7 @@ Bei ~2.000+ aktiven Entities in einer Zone wird der SQLite-Commit für Positions
 Einen lauffähigen Prototypen erstellen der den gesamten Architektur-Stack von Abschnitt 1–11 in Miniatur verifiziert:
 
 - **Client**: Silk.NET-Fenster, WASD-bewegbarer Cube, andere Spieler als Cubes gerendert, Partikel-Regen visualisiert
-- **Server**: QUIC-Listener, Session-Management, 20-Hz-Game-Loop, Broadcast, deterministisches Partikel-System als Lasttest
+- **Server**: LiteNetLib-Listener, Session-Management, 20-Hz-Game-Loop, Broadcast, deterministisches Partikel-System als Lasttest
 - **Shared**: MemoryPack-Messages, blittable Structs per MemoryMarshal, gemeinsame Physikformel
 
 Der POC verzichtet auf: ECS-Framework, SQLite, Visibility-Culling, Client-Side-Prediction. Alles wird direkt implementiert.
@@ -834,15 +836,15 @@ MmorpgPoc/
 │   ├── Messages.cs       MemoryPack-Klassen (Input, Events)
 │   └── Snapshots.cs      Blittable Structs (Positions, Particles)
 ├── Server/
-│   ├── Program.cs        Einstieg, Cert-Generierung, QuicServer starten
-│   ├── QuicServer.cs     QuicListener, Session-Accept-Loop
-│   ├── Session.cs        Pro-Verbindung: Channel<InputState>, Receive-Loop
+│   ├── Program.cs        Einstieg, LiteNetServer starten
+│   ├── LiteNetServer.cs  UDP-Listener, Session-Accept via INetEventListener
+│   ├── Session.cs        Pro-Verbindung: Channel<CInputState>, NetPeer
 │   ├── GameLoop.cs       20-Hz-Tick, Broadcast
 │   └── ParticleSystem.cs Deterministisches Partikel-Update
 └── Client/
-    ├── Program.cs        Einstieg, QuicClient verbinden, Window öffnen
-    ├── QuicClient.cs     Streams + Datagrams empfangen/senden
-    ├── InputHandler.cs   WASD → InputState
+    ├── Program.cs        Einstieg, LiteNetClient verbinden, Window öffnen
+    ├── LiteNetClient.cs  UDP Send/Receive, INetEventListener
+    ├── InputHandler.cs   WASD + Maus + Jump → CInputState
     ├── Interpolator.cs   Snapshot-Buffer → interpolierte Positionen
     └── Renderer.cs       Silk.NET OpenGL: Cubes + Partikel
 ```

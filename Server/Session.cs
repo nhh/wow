@@ -28,6 +28,9 @@ public class Session(NetPeer peer, uint id)
     public void SendSnapshot(byte[] data)
         => peer.Send(data, DeliveryMethod.ReliableOrdered);
 
+    public void SendSnapshot(byte[] data, int length)
+        => peer.Send(data, 0, length, DeliveryMethod.ReliableOrdered);
+
     public void SendWelcome()
     {
         var welcome = new byte[Framing.DatagramHeaderSize + Marshal.SizeOf<WelcomeMsg>()];

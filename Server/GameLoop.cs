@@ -1,12 +1,20 @@
-using Shared;
+using System.Buffers;
+using System.Runtime;
+using System.Runtime.InteropServices;
 using System.Threading;
+using Shared;
 
 namespace Server;
 
 public class GameLoop(LiteNetServer server, int particleCount = Framing.ParticleCount)
 {
-    private readonly ParticleSystem _particles = new(particleCount);
+    private readonly ParticleSystem _particles   = new(particleCount);
+    private readonly byte[]         _particleBuf = new byte[Framing.DatagramHeaderSize +
+                                                            particleCount * Marshal.SizeOf<ParticleSnapshot>()];
+    private readonly PlayerSnapshot[] _playerSnapsBuf = new PlayerSnapshot[64];
     private uint _tick;
+
+    private const int NoGCBudget = 4 * 1024 * 1024; // 4 MB
 
     public async Task RunAsync()
     {
@@ -17,7 +25,13 @@ public class GameLoop(LiteNetServer server, int particleCount = Framing.Particle
 
         while (true)
         {
-            Tick();
+            bool noGC = GC.TryStartNoGCRegion(NoGCBudget);
+            try   { Tick(); }
+            finally
+            {
+                if (noGC && GCSettings.LatencyMode == GCLatencyMode.NoGCRegion)
+                    GC.EndNoGCRegion();
+            }
 
             long sleepUntil = next - spinHead;
             long now        = System.Diagnostics.Stopwatch.GetTimestamp();
@@ -48,9 +62,10 @@ public class GameLoop(LiteNetServer server, int particleCount = Framing.Particle
 
         _particles.Update(_tick);
 
-        var playerSnaps = new PlayerSnapshot[sessions.Count];
-        for (int i = 0; i < sessions.Count; i++)
-            playerSnaps[i] = new PlayerSnapshot
+        int playerCount = sessions.Count;
+        int playerSnapSize = Marshal.SizeOf<PlayerSnapshot>();
+        for (int i = 0; i < playerCount; i++)
+            _playerSnapsBuf[i] = new PlayerSnapshot
             {
                 PlayerId = sessions[i].PlayerId,
                 X        = sessions[i].X,
@@ -59,19 +74,25 @@ public class GameLoop(LiteNetServer server, int particleCount = Framing.Particle
                 Yaw      = sessions[i].Yaw,
             };
 
-        var worldBuf = new byte[Framing.DatagramHeaderSize +
-                                playerSnaps.Length * System.Runtime.InteropServices.Marshal.SizeOf<PlayerSnapshot>()];
-        DatagramWriter.Write<PlayerSnapshot>(worldBuf, Opcode.SWorldSnapshot, playerSnaps);
-
-        var allParticles = _particles.Positions;
-        var particleBuf  = new byte[Framing.DatagramHeaderSize +
-                                    allParticles.Length * System.Runtime.InteropServices.Marshal.SizeOf<ParticleSnapshot>()];
-        DatagramWriter.Write<ParticleSnapshot>(particleBuf, Opcode.SParticleSnapshot, allParticles);
-
-        foreach (var s in sessions)
+        int worldBufSize = Framing.DatagramHeaderSize + playerCount * playerSnapSize;
+        byte[] worldBuf = ArrayPool<byte>.Shared.Rent(worldBufSize);
+        try
         {
-            s.SendSnapshot(worldBuf);
-            s.SendSnapshot(particleBuf);
+            DatagramWriter.Write<PlayerSnapshot>(worldBuf, Opcode.SWorldSnapshot,
+                _playerSnapsBuf.AsSpan(0, playerCount));
+
+            DatagramWriter.Write<ParticleSnapshot>(_particleBuf, Opcode.SParticleSnapshot,
+                _particles.Positions);
+
+            foreach (var s in sessions)
+            {
+                s.SendSnapshot(worldBuf, worldBufSize);
+                s.SendSnapshot(_particleBuf);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(worldBuf);
         }
     }
 
