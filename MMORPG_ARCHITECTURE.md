@@ -199,25 +199,57 @@ Interpolation ist stabiler. Preis: ~100ms künstlicher Lag auf anderen Spielern.
 
 ## 5. Interest Management
 
-### Entscheidung: Relevancy-Score mit Bandwidth-Budget, nicht pure Distanz
+### Entscheidung: Relevancy-Score mit Bandwidth-Budget — Distanz + Blickfeld, nicht pure Distanz
 
 Pure Distanz-PvS (wie in WoW 3.3.5a) hat Probleme:
 - In dicht besiedelten Zonen (City, Raid) explodiert die Bandwidth
 - Alle Entities behandelt gleich: Boss 50m entfernt = neutral Critter 49m entfernt
+- Entities hinter dem Spieler erhalten dasselbe Update-Intervall wie Entities direkt vor ihm
 
-**Relevancy-Score pro (Beobachter, Entity)-Paar:**
+#### 5a. Sichtfeld-Komponente (FOV-Bias)
+
+Entitäten im Blickfeld des Spielers sind unmittelbar wahrnehmbar und brauchen hohe Update-Frequenz. Entitäten hinter dem Spieler können mit reduziertem Intervall oder größerer Distanzgrenze gesendet werden — der Spieler sieht sie physisch nicht, bevor er sich umdreht.
 
 ```
-score = f(distanz, entityTyp, combatRelevanz, sichtlinie, priorität)
+Beobachter-Yaw: φ  (Blickrichtung, Einheitsvektor: (sin φ, cos φ))
+Vektor Beobachter → Entity: d⃗ (normiert)
+
+dot = sin(φ)·dx + cos(φ)·dz      // [-1, +1]
+fov_factor = (dot + 1) / 2        // [0, 1]: 1 = direkt vor, 0 = direkt hinter
+
+Beispiel bei dist=60m:
+  Entity direkt vor Spieler (dot≈1):   fov_factor = 1.0
+  Entity seitlich (dot≈0):             fov_factor = 0.5
+  Entity direkt hinter Spieler (dot≈-1): fov_factor = 0.0
+```
+
+FOV-Faktor modifiziert **effektive Distanz**, nicht den Score direkt — so bleibt die Distanzgrenze interpretierbar:
+
+```
+effective_dist = raw_dist / (0.3 + 0.7 * fov_factor)
+// Entity 80m hinter Spieler → effective_dist = 80 / 0.3 = 267m → außerhalb Radius
+// Entity 80m vor  Spieler  → effective_dist = 80 / 1.0 =  80m → innerhalb Radius
+```
+
+Der Faktor `0.3` stellt sicher, dass auch Entities hinter dem Spieler nicht vollständig ignoriert werden — ein Spieler der sich umdreht soll Entities nicht poppen sehen.
+
+#### 5b. Vollständiger Relevancy-Score
+
+```
+score = f(effective_dist, entityTyp, combatRelevanz, priorität)
 
 Beispiel:
-  Boss im eigenen Raid:              score = 1.0  → immer senden
-  PvP-Gegner 80m entfernt:           score = 0.8  → hohes Update-Intervall
-  Ambient-Creature 60m entfernt:     score = 0.2  → niedriges Update-Intervall
-  Ambient-Creature 150m entfernt:    score = 0.0  → kein Update
+  Boss im eigenen Raid (combat, direkt vor):    score = 1.0  → immer senden
+  PvP-Gegner 80m, direkt vor Spieler:           score = 0.8  → hohes Update-Intervall
+  PvP-Gegner 80m, direkt hinter Spieler:        score = 0.3  → niedriges Intervall
+  Ambient-Creature 60m vor Spieler:             score = 0.3  → niedriges Intervall
+  Ambient-Creature 60m hinter Spieler:          score = 0.0  → kein Update
+  Ambient-Creature 150m (egal wohin):           score = 0.0  → kein Update
 ```
 
-**Bandwidth-Budget per Client** (z.B. 128 KB/s downstream):
+**Wichtige Ausnahme:** Entities in aktiver Kampfinteraktion mit dem Beobachter erhalten immer `score = 1.0`, unabhängig von Winkel oder Distanz — ein Gegner der den Spieler von hinten angreift muss korrekt synchronisiert sein.
+
+#### 5c. Bandwidth-Budget per Client
 
 ```
 Pro Tick wird der Relevancy-Sort nach Score absteigend durchlaufen.
@@ -227,18 +259,39 @@ Entities werden in den Send-Buffer aufgenommen bis Budget erschöpft.
 
 Das ist die Technik aus Valve's Source Engine (entity priority system) und Improbable SpatialOS.
 
-**Räumlicher Index: SQLite R-Tree**
+#### 5d. Räumlicher Index: SQLite R-Tree
 
-SQLite hat eine eingebaute R-Tree Extension die handgestrickten Grid- oder BVH-Code vollständig ersetzt:
+SQLite hat eine eingebaute R-Tree Extension die handgestrickten Grid- oder BVH-Code vollständig ersetzt. Der R-Tree liefert den Distanz-Kandidaten-Pool, der FOV-Filter läuft danach in C#:
 
 ```sql
-CREATE VIRTUAL TABLE entity_rtree USING rtree(id, min_x, max_x, min_y, max_y);
-
-SELECT id FROM entity_rtree
-WHERE min_x >= ? AND max_x <= ? AND min_y >= ? AND max_y <= ?;
+-- Schritt 1: R-Tree liefert alle Entities im Worst-Case-Radius (ohne FOV)
+SELECT id, x, z, yaw FROM entity_rtree
+JOIN positions USING (id)
+WHERE min_x >= $px-100 AND max_x <= $px+100
+  AND min_y >= $pz-100 AND max_y <= $pz+100;
 ```
 
-Passt sich dynamisch an Spielerdichte an, funktioniert für Sichtlinien-Queries, und ist eine bewährte Implementierung ohne eigenen Index-Code. Details zur Integration in Abschnitt 11.
+```csharp
+// Schritt 2: FOV-Filter + Score in C# (kein SQL-Overhead für dot-product)
+foreach (var candidate in rtreeResults)
+{
+    float dx = candidate.X - observer.X;
+    float dz = candidate.Z - observer.Z;
+    float rawDist = MathF.Sqrt(dx*dx + dz*dz);
+
+    float dot = MathF.Sin(observer.Yaw) * (dx/rawDist)
+              + MathF.Cos(observer.Yaw) * (dz/rawDist);
+    float fovFactor  = (dot + 1f) / 2f;
+    float effectDist = rawDist / (0.3f + 0.7f * fovFactor);
+
+    if (effectDist > ViewRadius) continue;
+    float score = ComputeScore(effectDist, candidate, observer);
+    sendList.Add((candidate, score));
+}
+sendList.Sort(...); // absteigend nach Score
+```
+
+Der R-Tree schneidet den Suchraum auf O(log N + k) Kandidaten, der FOV-Filter ist O(k) mit k ≪ N. Keine eigene Datenstruktur nötig.
 
 ---
 
