@@ -23,8 +23,15 @@ public class GameLoop(LiteNetServer server, int particleCount = Framing.Particle
         long spinHead = (long)(0.002 * freq);
         long next     = System.Diagnostics.Stopwatch.GetTimestamp() + interval;
 
+        long   statWindow  = freq * 2; // log every 2 seconds
+        long   statNext    = System.Diagnostics.Stopwatch.GetTimestamp() + statWindow;
+        long   tickMaxUs   = 0;
+        long   tickTotalUs = 0;
+        int    tickCount   = 0;
+
         while (true)
         {
+            long t0   = System.Diagnostics.Stopwatch.GetTimestamp();
             bool noGC = GC.TryStartNoGCRegion(NoGCBudget);
             try   { Tick(); }
             finally
@@ -32,9 +39,22 @@ public class GameLoop(LiteNetServer server, int particleCount = Framing.Particle
                 if (noGC && GCSettings.LatencyMode == GCLatencyMode.NoGCRegion)
                     GC.EndNoGCRegion();
             }
+            long tickUs = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1_000_000 / freq;
+            if (tickUs > tickMaxUs) tickMaxUs = tickUs;
+            tickTotalUs += tickUs;
+            tickCount++;
+
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            if (now >= statNext)
+            {
+                long avgUs = tickCount > 0 ? tickTotalUs / tickCount : 0;
+                Console.WriteLine($"[tick] particles={particleCount} sessions={server.Sessions.Count}" +
+                                  $"  avg={avgUs}µs  max={tickMaxUs}µs  budget=50000µs");
+                tickMaxUs = 0; tickTotalUs = 0; tickCount = 0;
+                statNext  = now + statWindow;
+            }
 
             long sleepUntil = next - spinHead;
-            long now        = System.Diagnostics.Stopwatch.GetTimestamp();
             if (sleepUntil > now)
                 await Task.Delay(TimeSpan.FromSeconds((sleepUntil - now) / (double)freq));
 
