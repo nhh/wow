@@ -169,7 +169,9 @@ public class Renderer(Interpolator interpolator)
         _window!.Title = $"MMORPG POC | me=p{interpolator.MyPlayerId} drift={drift:F2}{others} | snap={ageMs:F0}ms";
     }
 
+#if DEBUG
     private int _frameCount;
+#endif
 
     private unsafe void OnRender(double dt)
     {
@@ -180,6 +182,7 @@ public class Renderer(Interpolator interpolator)
         if (w == 0 || h == 0) return;
 
         // Debug: print data counts every 60 frames
+#if DEBUG
         if (++_frameCount % 60 == 0)
         {
             var ps = interpolator.Players;
@@ -187,6 +190,7 @@ public class Renderer(Interpolator interpolator)
             foreach (var p in ps)
                 Console.Error.WriteLine($"  id={p.PlayerId} X={p.X:F2} Z={p.Z:F2} self={p.PlayerId == interpolator.MyPlayerId}");
         }
+#endif
 
         gl.Viewport(0, 0, (uint)w, (uint)h);
         gl.UseProgram(_shader);

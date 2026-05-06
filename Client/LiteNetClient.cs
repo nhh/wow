@@ -37,13 +37,17 @@ public class LiteNetClient : INetEventListener
     public void OnPeerConnected(NetPeer peer)
     {
         _server = peer;
+#if DEBUG
         Console.Error.WriteLine("Connected to server");
+#endif
     }
 
     public void OnPeerDisconnected(NetPeer peer, DisconnectInfo info)
     {
         _server = null;
+#if DEBUG
         Console.Error.WriteLine($"Disconnected: {info.Reason}");
+#endif
     }
 
     public void OnNetworkReceive(NetPeer peer, NetPacketReader reader,
@@ -58,7 +62,9 @@ public class LiteNetClient : INetEventListener
         {
             case Opcode.SWelcome:
                 _interp.MyPlayerId = DatagramWriter.Read<WelcomeMsg>(span)[0].PlayerId;
+#if DEBUG
                 Console.Error.WriteLine($"Welcome — PlayerId={_interp.MyPlayerId}");
+#endif
                 break;
             case Opcode.SWorldSnapshot:
                 _interp.UpdatePlayers(DatagramWriter.Read<PlayerSnapshot>(span));
@@ -72,7 +78,11 @@ public class LiteNetClient : INetEventListener
 
     public void OnConnectionRequest(ConnectionRequest request) { }
     public void OnNetworkError(System.Net.IPEndPoint ep, System.Net.Sockets.SocketError err)
-        => Console.Error.WriteLine($"Network error {ep}: {err}");
+    {
+#if DEBUG
+        Console.Error.WriteLine($"Network error {ep}: {err}");
+#endif
+    }
     public void OnNetworkReceiveUnconnected(System.Net.IPEndPoint ep,
         NetPacketReader reader, UnconnectedMessageType type) { }
     public void OnNetworkLatencyUpdate(NetPeer peer, int latency) { }

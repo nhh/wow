@@ -15,7 +15,9 @@ public class LiteNetServer : INetEventListener
     {
         _manager = new NetManager(this);
         _manager.Start(Framing.Port);
+#if DEBUG
         Console.WriteLine($"Listening on :{Framing.Port}");
+#endif
     }
 
     public IReadOnlyList<Session> Sessions
@@ -35,7 +37,9 @@ public class LiteNetServer : INetEventListener
         var session = new Session(peer, _nextId++);
         peer.Tag = session;
         lock (_sessionsLock) _sessions.Add(session);
+#if DEBUG
         Console.WriteLine($"Session {session.PlayerId} connected");
+#endif
         session.SendWelcome();
     }
 
@@ -43,7 +47,9 @@ public class LiteNetServer : INetEventListener
     {
         if (peer.Tag is not Session s) return;
         lock (_sessionsLock) _sessions.Remove(s);
+#if DEBUG
         Console.WriteLine($"Session {s.PlayerId} disconnected: {info.Reason}");
+#endif
     }
 
     public void OnNetworkReceive(NetPeer peer, NetPacketReader reader,
@@ -64,7 +70,11 @@ public class LiteNetServer : INetEventListener
     }
 
     public void OnNetworkError(System.Net.IPEndPoint ep, System.Net.Sockets.SocketError err)
-        => Console.WriteLine($"Network error {ep}: {err}");
+    {
+#if DEBUG
+        Console.WriteLine($"Network error {ep}: {err}");
+#endif
+    }
 
     public void OnNetworkReceiveUnconnected(System.Net.IPEndPoint ep,
         NetPacketReader reader, UnconnectedMessageType type) { }

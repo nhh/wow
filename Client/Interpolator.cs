@@ -14,7 +14,9 @@ public class Interpolator
     private readonly PlayerFrame[] _playerBuffer = new PlayerFrame[8];
     private int _playerHead, _playerCount;
 
+#if DEBUG
     private int _updateCount;
+#endif
 
     public void UpdatePlayers(ReadOnlySpan<PlayerSnapshot> snaps)
     {
@@ -28,9 +30,11 @@ public class Interpolator
             else
                 { _playerBuffer[_playerHead] = frame; _playerHead = (_playerHead + 1) % _playerBuffer.Length; }
         }
+#if DEBUG
         if (++_updateCount % 40 == 0)
             foreach (var s in snaps)
                 Console.Error.WriteLine($"[RECV] id={s.PlayerId} X={s.X:F2} Z={s.Z:F2}");
+#endif
     }
 
     public PlayerSnapshot[] Players

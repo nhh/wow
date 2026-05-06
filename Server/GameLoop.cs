@@ -47,9 +47,11 @@ public class GameLoop(LiteNetServer server, int particleCount = Framing.Particle
             long now = System.Diagnostics.Stopwatch.GetTimestamp();
             if (now >= statNext)
             {
+#if DEBUG
                 long avgUs = tickCount > 0 ? tickTotalUs / tickCount : 0;
                 Console.WriteLine($"[tick] particles={particleCount} sessions={server.Sessions.Count}" +
                                   $"  avg={avgUs}µs  max={tickMaxUs}µs  budget=50000µs");
+#endif
                 tickMaxUs = 0; tickTotalUs = 0; tickCount = 0;
                 statNext  = now + statWindow;
             }
