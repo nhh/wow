@@ -214,49 +214,38 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectGroup[] 
                     };
                 }
 
-            int worldLen = playerCount    > 0 ? 4 + playerCount    * playerSnapSize : 0;
-            int goLen    = goVisibleCount > 0 ? 4 + goVisibleCount * goSnapSize    : 0;
-            int totalLen = worldLen + goLen;
-            if (totalLen == 0) continue;
+            if (playerCount == 0 && goVisibleCount == 0) continue;
 
-            byte[] coalesced = ArrayPool<byte>.Shared.Rent(totalLen);
+            // One reusable MTU-sized buffer; GOs are chunked to fit
+            int maxGosPerPacket = (MtuPayload - 4) / goSnapSize;
+            byte[] pkt = ArrayPool<byte>.Shared.Rent(MtuPayload);
             try
             {
-                int off = 0;
+                int pktLen = 0;
+
                 if (playerCount > 0)
-                    off += DatagramWriter.Write<PlayerSnapshotQ>(coalesced.AsSpan(), Opcode.SWorldSnapshot,
-                        _playerQSnapsBuf.AsSpan(0, playerCount));
-                if (goVisibleCount > 0)
-                    DatagramWriter.Write<GameObjectSnapshot>(coalesced.AsSpan(off), Opcode.SGameObjectSnapshot,
-                        _goSnapsBuf.AsSpan(0, goVisibleCount));
-                if (totalLen <= MtuPayload)
+                    pktLen = DatagramWriter.Write<PlayerSnapshotQ>(
+                        pkt.AsSpan(), Opcode.SWorldSnapshot, _playerQSnapsBuf.AsSpan(0, playerCount));
+
+                for (int i = 0; i < goVisibleCount; i += maxGosPerPacket)
                 {
-                    observer.SendSnapshot(coalesced, totalLen);
-                }
-                else
-                {
-                    Span<(int off, int len)> segs =
-                    [
-                        (0,        worldLen),
-                        (worldLen, goLen),
-                    ];
-                    int pktStart = -1, pktLen = 0;
-                    foreach (var (segOff, segLen) in segs)
+                    int chunk = Math.Min(maxGosPerPacket, goVisibleCount - i);
+                    int gLen  = 4 + chunk * goSnapSize;
+
+                    if (pktLen > 0 && pktLen + gLen > MtuPayload)
                     {
-                        if (segLen == 0) continue;
-                        if (pktStart < 0) pktStart = segOff;
-                        if (pktLen > 0 && pktLen + segLen > MtuPayload)
-                        {
-                            observer.SendSnapshot(coalesced, pktStart, pktLen);
-                            pktStart = segOff;
-                            pktLen   = 0;
-                        }
-                        pktLen += segLen;
+                        observer.SendSnapshot(pkt, pktLen);
+                        pktLen = 0;
                     }
-                    if (pktLen > 0) observer.SendSnapshot(coalesced, pktStart, pktLen);
+
+                    DatagramWriter.Write<GameObjectSnapshot>(
+                        pkt.AsSpan(pktLen), Opcode.SGameObjectSnapshot, _goSnapsBuf.AsSpan(i, chunk));
+                    pktLen += gLen;
                 }
+
+                if (pktLen > 0) observer.SendSnapshot(pkt, pktLen);
             }
-            finally { ArrayPool<byte>.Shared.Return(coalesced); }
+            finally { ArrayPool<byte>.Shared.Return(pkt); }
         }
     }
 
