@@ -33,7 +33,7 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectInstance
         public float LastSentVX, LastSentVZ;
     }
 
-    private readonly Dictionary<(uint, uint), SendState> _sendState    = new();
+    private readonly Dictionary<ulong, SendState> _sendState = new();
     private readonly ConcurrentQueue<uint>               _disconnected = new();
 
     public async Task RunAsync()
@@ -97,7 +97,7 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectInstance
         while (_disconnected.TryDequeue(out uint id))
         {
             foreach (var key in _sendState.Keys.ToList())
-                if (key.Item1 == id || key.Item2 == id)
+                if ((uint)(key >> 32) == id || (uint)key == id)
                     _sendState.Remove(key);
         }
 
@@ -162,7 +162,7 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectInstance
                     float score    = 1f - effectDist / _playerViewRadius;
                     int   interval = score > 0.7f ? 1 : score > 0.3f ? 4 : 20;
 
-                    var  key     = (observer.PlayerId, entity.PlayerId);
+                    ulong key = (ulong)observer.PlayerId << 32 | entity.PlayerId;
                     _sendState.TryGetValue(key, out var state);
                     uint elapsed = _tick - state.LastSentTick;
 
@@ -190,7 +190,7 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectInstance
                     Z        = (short)(entity.Z * 100f),
                     Yaw      = (byte)(yawNorm / MathF.Tau * 256f),
                 };
-                _sendState[(observer.PlayerId, entity.PlayerId)] = new SendState
+                _sendState[(ulong)observer.PlayerId << 32 | entity.PlayerId] = new SendState
                 {
                     LastSentTick = _tick,
                     LastSentX    = entity.X,         LastSentZ  = entity.Z,

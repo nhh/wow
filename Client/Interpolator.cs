@@ -1,5 +1,7 @@
 using Shared;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
 
 namespace Client;
 
@@ -21,6 +23,9 @@ public class Interpolator
     private PlayerSnapshot _latestSelf;
     private bool           _hasSelf;
     private readonly object _selfLock = new();
+
+    private readonly Dictionary<uint, PlayerSnapshot>   _prevPlayerLookup = new(64);
+    private readonly Dictionary<uint, GameObjectState>  _prevGoLookup     = new(16);
 
     public bool TryGetLatestSelf(out PlayerSnapshot snap)
     {
@@ -84,39 +89,74 @@ public class Interpolator
         return LerpGameObjects(prev, cur, alpha);
     }
 
-    private static PlayerSnapshot[] LerpPlayers(PlayerSnapshot[] prev, PlayerSnapshot[] cur, float alpha)
+    private PlayerSnapshot[] LerpPlayers(PlayerSnapshot[] prev, PlayerSnapshot[] cur, float alpha)
     {
+        _prevPlayerLookup.Clear();
+        foreach (var p in prev) _prevPlayerLookup[p.PlayerId] = p;
+
         var result = new PlayerSnapshot[cur.Length];
         for (int i = 0; i < cur.Length; i++)
         {
-            var  c     = cur[i];
-            bool found = false;
-            PlayerSnapshot p = default;
-            foreach (var ps in prev) if (ps.PlayerId == c.PlayerId) { p = ps; found = true; break; }
+            var c = cur[i];
+            if (!_prevPlayerLookup.TryGetValue(c.PlayerId, out var p))
+            {
+                result[i] = c;
+                continue;
+            }
             float dyaw = c.Yaw - p.Yaw;
             dyaw -= MathF.Round(dyaw / MathF.Tau) * MathF.Tau;
-            result[i] = found ? new PlayerSnapshot
+            result[i] = new PlayerSnapshot
             {
                 PlayerId = c.PlayerId,
                 X   = p.X + (c.X - p.X) * alpha,
                 Y   = p.Y + (c.Y - p.Y) * alpha,
                 Z   = p.Z + (c.Z - p.Z) * alpha,
                 Yaw = p.Yaw + dyaw * alpha,
-            } : c;
+            };
         }
         return result;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private static ParticleSnapshot[] LerpParticles(ParticleSnapshot[] prev, ParticleSnapshot[] cur, float alpha)
     {
         if (prev.Length != cur.Length) return cur;
         var result = new ParticleSnapshot[cur.Length];
-        for (int i = 0; i < cur.Length; i++)
+
+        var vAlpha     = Vector128.Create(alpha);
+        var vMaxDistSq = Vector128.Create(9f);
+
+        int i = 0;
+        for (int end = cur.Length - 3; i <= end; i += 4)
+        {
+            var pX = Vector128.Create(prev[i].X, prev[i+1].X, prev[i+2].X, prev[i+3].X);
+            var pY = Vector128.Create(prev[i].Y, prev[i+1].Y, prev[i+2].Y, prev[i+3].Y);
+            var pZ = Vector128.Create(prev[i].Z, prev[i+1].Z, prev[i+2].Z, prev[i+3].Z);
+            var cX = Vector128.Create(cur[i].X,  cur[i+1].X,  cur[i+2].X,  cur[i+3].X);
+            var cY = Vector128.Create(cur[i].Y,  cur[i+1].Y,  cur[i+2].Y,  cur[i+3].Y);
+            var cZ = Vector128.Create(cur[i].Z,  cur[i+1].Z,  cur[i+2].Z,  cur[i+3].Z);
+
+            var dx   = cX - pX;
+            var dy   = cY - pY;
+            var dz   = cZ - pZ;
+            var mask = Vector128.GreaterThan(dx*dx + dy*dy + dz*dz, vMaxDistSq);
+
+            var rX = Vector128.ConditionalSelect(mask, cX, pX + dx * vAlpha);
+            var rY = Vector128.ConditionalSelect(mask, cY, pY + dy * vAlpha);
+            var rZ = Vector128.ConditionalSelect(mask, cZ, pZ + dz * vAlpha);
+
+            result[i]   = new ParticleSnapshot { X = rX[0], Y = rY[0], Z = rZ[0], ColorId = cur[i].ColorId };
+            result[i+1] = new ParticleSnapshot { X = rX[1], Y = rY[1], Z = rZ[1], ColorId = cur[i+1].ColorId };
+            result[i+2] = new ParticleSnapshot { X = rX[2], Y = rY[2], Z = rZ[2], ColorId = cur[i+2].ColorId };
+            result[i+3] = new ParticleSnapshot { X = rX[3], Y = rY[3], Z = rZ[3], ColorId = cur[i+3].ColorId };
+        }
+
+        for (; i < cur.Length; i++)
         {
             float dx = cur[i].X - prev[i].X;
             float dy = cur[i].Y - prev[i].Y;
             float dz = cur[i].Z - prev[i].Z;
-            if (dx * dx + dy * dy + dz * dz > 9f) { result[i] = cur[i]; continue; }
+            if (dx*dx + dy*dy + dz*dz > 9f) { result[i] = cur[i]; continue; }
             result[i] = new ParticleSnapshot
             {
                 X       = prev[i].X + dx * alpha,
@@ -125,28 +165,34 @@ public class Interpolator
                 ColorId = cur[i].ColorId,
             };
         }
+
         return result;
     }
 
-    private static GameObjectState[] LerpGameObjects(GameObjectState[] prev, GameObjectState[] cur, float alpha)
+    private GameObjectState[] LerpGameObjects(GameObjectState[] prev, GameObjectState[] cur, float alpha)
     {
+        _prevGoLookup.Clear();
+        foreach (var p in prev) _prevGoLookup[p.Id] = p;
+
         var result = new GameObjectState[cur.Length];
         for (int i = 0; i < cur.Length; i++)
         {
-            var  c     = cur[i];
-            bool found = false;
-            GameObjectState p = default;
-            foreach (var ps in prev) if (ps.Id == c.Id) { p = ps; found = true; break; }
+            var c = cur[i];
+            if (!_prevGoLookup.TryGetValue(c.Id, out var p))
+            {
+                result[i] = c;
+                continue;
+            }
             float dyaw = c.Yaw - p.Yaw;
             dyaw -= MathF.Round(dyaw / MathF.Tau) * MathF.Tau;
-            result[i] = found ? new GameObjectState
+            result[i] = new GameObjectState
             {
                 Id  = c.Id,
                 X   = p.X + (c.X - p.X) * alpha,
                 Y   = p.Y + (c.Y - p.Y) * alpha,
                 Z   = p.Z + (c.Z - p.Z) * alpha,
                 Yaw = p.Yaw + dyaw * alpha,
-            } : c;
+            };
         }
         return result;
     }
