@@ -12,6 +12,9 @@ public class Interpolator
     private readonly InterpolationBuffer<PlayerSnapshot>  _players     = new();
     private readonly InterpolationBuffer<GameObjectState> _gameObjects = new();
 
+    // Accumulates GO chunks within one tick; flushed to _gameObjects when world snapshot arrives
+    private readonly List<GameObjectState> _goAccum = new(1100);
+
     private long _lastSnapshotTick;
     public double SnapshotAgeMs =>
         (Stopwatch.GetTimestamp() - _lastSnapshotTick) * 1000.0 / Stopwatch.Frequency;
@@ -36,6 +39,12 @@ public class Interpolator
 
     public void UpdatePlayers(ReadOnlySpan<PlayerSnapshot> snaps)
     {
+        // World snapshot = tick boundary: flush accumulated GO chunks as one complete frame
+        if (_goAccum.Count > 0)
+        {
+            _gameObjects.Push(_goAccum.ToArray());
+            _goAccum.Clear();
+        }
         _players.Push(snaps);
         uint myId = MyPlayerId;
         if (myId != 0)
@@ -55,7 +64,7 @@ public class Interpolator
     public void UpdateGameObjects(GameObjectState[] snaps)
     {
         _lastSnapshotTick = Stopwatch.GetTimestamp();
-        _gameObjects.Push(snaps);
+        _goAccum.AddRange(snaps);
     }
 
     public PlayerSnapshot[] Players
