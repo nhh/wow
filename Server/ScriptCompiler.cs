@@ -21,6 +21,14 @@ public static class ScriptCompiler
         return refs;
     }
 
+    public static T[] CompileAll<T>(IReadOnlyList<(string source, string typeName)> scripts) where T : class
+    {
+        var results = new T[scripts.Count];
+        Parallel.For(0, scripts.Count, i =>
+            results[i] = Compile<T>(scripts[i].source, scripts[i].typeName));
+        return results;
+    }
+
     public static T Compile<T>(string source, string typeName) where T : class
     {
         var tree = CSharpSyntaxTree.ParseText(source);
