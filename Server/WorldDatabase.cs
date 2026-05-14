@@ -16,15 +16,17 @@ public sealed class WorldDatabase : IDisposable
     public float PlayerViewRadius   { get; private set; }
     public float ParticleViewRadius { get; private set; }
     public float DRThreshold        { get; private set; }
-    public float GoViewRadius       { get; private set; }
+    public float  GoViewRadius  { get; private set; }
+    public string ScriptsFolder { get; set; } = "";
 
     public static string DefaultPath =>
         Path.Combine(AppContext.BaseDirectory, "world.db");
 
     public WorldDatabase(string? path = null)
     {
-        path ??= DefaultPath;
-        _conn = new SqliteConnection($"Data Source={path}");
+        path         ??= DefaultPath;
+        ScriptsFolder  = Path.Combine(Path.GetDirectoryName(path)!, "compiled-scripts");
+        _conn          = new SqliteConnection($"Data Source={path}");
         _conn.Open();
         EnsureSchema();
         SeedDefaults();
@@ -173,77 +175,47 @@ public sealed class WorldDatabase : IDisposable
 
     public IParticleScript LoadParticleScript()
     {
-        using var cmd = _conn.CreateCommand();
-        cmd.CommandText = "SELECT CAST(data AS TEXT) FROM sqlar WHERE name = 'scripts/particle.cs'";
-        var source = cmd.ExecuteScalar() as string;
-
-        if (source is null)
-        {
-            Console.WriteLine("[db] scripts/particle.cs not found — compiling built-in source");
-            source = ParticleScriptSource;
-        }
-
-        Console.WriteLine("[db] compiling scripts/particle.cs ...");
-        var script = ScriptCompiler.Compile<IParticleScript>(source, "Scripts.ParticleScript");
-        Console.WriteLine("[db] scripts/particle.cs compiled OK");
-        return script;
+        var dll = Path.Combine(ScriptsFolder, "scripts", "particle.dll");
+        Console.WriteLine($"[db] loading {dll}");
+        var type = ScriptLoader.LoadType<IParticleScript>(dll);
+        return ScriptLoader.CreateInstance<IParticleScript>(type);
     }
 
     public GameObjectInstance[] LoadGameObjects()
     {
-        // Collect all defs with their script sources
-        var defs    = new List<(uint id, float x, float y, float z, float yaw, string? source)>();
-        var sources = new Dictionary<string, string>(); // scriptName → C# source
+        var defs      = new List<(uint id, float x, float y, float z, float yaw, string scriptName)>();
+        var typeCache = new Dictionary<string, Type>(); // scriptName → compiled Type (shared per unique script)
 
-        using (var scriptCmd = _conn.CreateCommand())
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "SELECT id, x, y, z, yaw, script_name FROM game_object_defs";
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            defs.Add(((uint)r.GetInt64(0), (float)r.GetDouble(1), (float)r.GetDouble(2),
+                      (float)r.GetDouble(3), (float)r.GetDouble(4), r.GetString(5)));
+
+        if (defs.Count == 0) return [];
+
+        var instances = new List<GameObjectInstance>(defs.Count);
+        foreach (var (id, x, y, z, yaw, scriptName) in defs)
         {
-            scriptCmd.CommandText = "SELECT CAST(data AS TEXT) FROM sqlar WHERE name = $n";
-            var nameParam = scriptCmd.Parameters.Add("$n", Microsoft.Data.Sqlite.SqliteType.Text);
-
-            using var defCmd = _conn.CreateCommand();
-            defCmd.CommandText = "SELECT id, x, y, z, yaw, script_name FROM game_object_defs";
-            using var r = defCmd.ExecuteReader();
-            while (r.Read())
+            if (!typeCache.TryGetValue(scriptName, out var type))
             {
-                uint  id         = (uint)r.GetInt64(0);
-                float x          = (float)r.GetDouble(1);
-                float y          = (float)r.GetDouble(2);
-                float z          = (float)r.GetDouble(3);
-                float yaw        = (float)r.GetDouble(4);
-                string scriptName = r.GetString(5);
-
-                if (!sources.ContainsKey(scriptName))
+                var dllPath = Path.Combine(ScriptsFolder, Path.ChangeExtension(scriptName, ".dll"));
+                if (!File.Exists(dllPath))
                 {
-                    nameParam.Value = scriptName;
-                    var src = scriptCmd.ExecuteScalar() as string;
-                    if (src is null)
-                    {
-                        Console.WriteLine($"[db] warning: script '{scriptName}' not found in sqlar, skipping GO {id}");
-                        defs.Add((id, x, y, z, yaw, null));
-                        continue;
-                    }
-                    sources[scriptName] = src;
+                    Console.WriteLine($"[db] warning: {dllPath} not found, skipping GO {id}");
+                    continue;
                 }
-                defs.Add((id, x, y, z, yaw, sources[scriptName]));
+                type = ScriptLoader.LoadType<Shared.Scripts.IGameObjectScript>(dllPath);
+                typeCache[scriptName] = type;
+                Console.WriteLine($"[db] loaded {scriptName} ({dllPath})");
             }
+            instances.Add(new GameObjectInstance(id, x, y, z, yaw,
+                ScriptLoader.CreateInstance<Shared.Scripts.IGameObjectScript>(type)));
         }
 
-        // Each GO gets its own compiled script instance (own private state)
-        var validDefs = defs.Where(d => d.source is not null).ToList();
-        if (validDefs.Count == 0) return [];
-
-        var entries  = validDefs.Select(d => (d.source!, "Scripts.GameObjectScript")).ToList();
-        var compiled = ScriptCompiler.CompileAll<Shared.Scripts.IGameObjectScript>(entries);
-
-        var instances = new GameObjectInstance[validDefs.Count];
-        for (int i = 0; i < validDefs.Count; i++)
-        {
-            var (id, x, y, z, yaw, _) = validDefs[i];
-            instances[i] = new GameObjectInstance(id, x, y, z, yaw, compiled[i]);
-        }
-
-        Console.WriteLine($"[db] loaded {instances.Length} game object(s)");
-        return instances;
+        Console.WriteLine($"[db] {instances.Count} game object(s), {typeCache.Count} unique script(s)");
+        return instances.ToArray();
     }
 
     public void Dispose() => _conn.Dispose();

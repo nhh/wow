@@ -238,14 +238,43 @@ public class Renderer(Interpolator interpolator)
         }
 
         // Game objects — light gray cubes driven by server scripts
+        Span<Vector4> frustum = stackalloc Vector4[6];
+        ExtractFrustumPlanes(vp, frustum);
         foreach (var go in interpolator.GetGameObjects())
         {
+            if (!InFrustum(frustum, go.X, go.Y, go.Z, 0.9f)) continue;
             var mvp = Matrix4x4.CreateRotationY(go.Yaw) *
                       Matrix4x4.CreateTranslation(go.X, go.Y, go.Z) * vp;
             SetMvp(gl, mvp);
             gl.Uniform3(_colorLoc, 0.85f, 0.85f, 0.85f);
             gl.DrawElements(PrimitiveType.Triangles, 36, DrawElementsType.UnsignedInt, (void*)0);
         }
+    }
+
+    // Extracts 6 normalized frustum planes from a row-major VP matrix.
+    // Plane equation: dot(plane.XYZ, pos) + plane.W >= 0 means inside.
+    private static void ExtractFrustumPlanes(Matrix4x4 m, Span<Vector4> p)
+    {
+        p[0] = NormalizePlane(m.M11+m.M14, m.M21+m.M24, m.M31+m.M34, m.M41+m.M44); // left
+        p[1] = NormalizePlane(m.M14-m.M11, m.M24-m.M21, m.M34-m.M31, m.M44-m.M41); // right
+        p[2] = NormalizePlane(m.M12+m.M14, m.M22+m.M24, m.M32+m.M34, m.M42+m.M44); // bottom
+        p[3] = NormalizePlane(m.M14-m.M12, m.M24-m.M22, m.M34-m.M32, m.M44-m.M42); // top
+        p[4] = NormalizePlane(m.M13+m.M14, m.M23+m.M24, m.M33+m.M34, m.M43+m.M44); // near
+        p[5] = NormalizePlane(m.M14-m.M13, m.M24-m.M23, m.M34-m.M33, m.M44-m.M43); // far
+    }
+
+    private static Vector4 NormalizePlane(float a, float b, float c, float d)
+    {
+        float len = MathF.Sqrt(a * a + b * b + c * c);
+        return new Vector4(a / len, b / len, c / len, d / len);
+    }
+
+    private static bool InFrustum(Span<Vector4> planes, float x, float y, float z, float r)
+    {
+        foreach (var p in planes)
+            if (p.X * x + p.Y * y + p.Z * z + p.W < -r)
+                return false;
+        return true;
     }
 
     private unsafe void SetMvp(GL gl, Matrix4x4 m)

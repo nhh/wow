@@ -19,5 +19,14 @@ dotnet publish "$PSScriptRoot\Client\Client.csproj" `
     -o "$out\Client"
 if (-not $?) { exit 1 }
 
+Write-Host "==> ScriptCompiler (framework-dependent)"
+dotnet publish "$PSScriptRoot\ScriptCompiler\ScriptCompiler.csproj" `
+    -c Release `
+    -o "$out\ScriptCompiler"
+if (-not $?) { exit 1 }
+
 Write-Host ""
 Write-Host "Done. Output: $out"
+Write-Host ""
+Write-Host "Next step: run ScriptCompiler to compile scripts before starting the server:"
+Write-Host "  $out\ScriptCompiler\ScriptCompiler.exe <world.db> <server-dir>\compiled-scripts"
