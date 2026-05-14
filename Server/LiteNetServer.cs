@@ -20,10 +20,19 @@ public class LiteNetServer : INetEventListener
 #endif
     }
 
-    public IReadOnlyList<Session> Sessions
+    public event Action<uint>? SessionDisconnected;
+
+    public int CopySessionsTo(Session[] buffer)
     {
-        get { lock (_sessionsLock) return [.. _sessions]; }
+        lock (_sessionsLock)
+        {
+            int count = Math.Min(_sessions.Count, buffer.Length);
+            for (int i = 0; i < count; i++) buffer[i] = _sessions[i];
+            return count;
+        }
     }
+
+    public int SessionCount { get { lock (_sessionsLock) return _sessions.Count; } }
 
     public void PollEvents() => _manager.PollEvents();
 
@@ -47,6 +56,7 @@ public class LiteNetServer : INetEventListener
     {
         if (peer.Tag is not Session s) return;
         lock (_sessionsLock) _sessions.Remove(s);
+        SessionDisconnected?.Invoke(s.PlayerId);
 #if DEBUG
         Console.WriteLine($"Session {s.PlayerId} disconnected: {info.Reason}");
 #endif

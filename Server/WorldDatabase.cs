@@ -148,8 +148,8 @@ public sealed class WorldDatabase : IDisposable
 
         if (source is null)
         {
-            Console.WriteLine("[db] scripts/particle.cs not found — using built-in fallback");
-            return new FallbackParticleScript();
+            Console.WriteLine("[db] scripts/particle.cs not found — compiling built-in source");
+            source = ParticleScriptSource;
         }
 
         Console.WriteLine("[db] compiling scripts/particle.cs ...");

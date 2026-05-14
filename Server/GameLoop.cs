@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Runtime;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -8,31 +9,44 @@ namespace Server;
 
 public class GameLoop(LiteNetServer server, WorldDatabase db)
 {
-    private readonly ParticleSystem _particles   = new(db.ParticleCount, db.LoadParticleScript());
+    private readonly ParticleSystem     _particles        = new(db.ParticleCount, db.LoadParticleScript());
     private readonly PlayerSnapshotQ[]  _playerQSnapsBuf  = new PlayerSnapshotQ[64];
     private readonly ParticleSnapshot[] _particleSnapsBuf = new ParticleSnapshot[db.ParticleCount];
-    private readonly int   _particleCount      = db.ParticleCount;
-    private readonly float _moveSpeed          = db.MoveSpeed;
-    private readonly float _jumpSpeed          = db.JumpSpeed;
-    private readonly float _gravity            = db.Gravity;
-    private readonly float _playerViewRadius   = db.PlayerViewRadius;
-    private readonly float _drThreshold        = db.DRThreshold;
+    private readonly Session[]          _sessionsBuf      = new Session[256];
+    private readonly float _moveSpeed        = db.MoveSpeed;
+    private readonly float _jumpSpeed        = db.JumpSpeed;
+    private readonly float _gravity          = db.Gravity;
+    private readonly float _playerViewRadius = db.PlayerViewRadius;
+    private readonly float _playerViewRadiusSq = db.PlayerViewRadius * db.PlayerViewRadius;
+    private readonly float _drThresholdSq    = db.DRThreshold * db.DRThreshold;
     private uint _tick;
 
     private const int NoGCBudget = 4 * 1024 * 1024;
 
+    private struct SendState
+    {
+        public uint  LastSentTick;
+        public float LastSentX,  LastSentZ;
+        public float LastSentVX, LastSentVZ;
+    }
+
+    private readonly Dictionary<(uint, uint), SendState> _sendState    = new();
+    private readonly ConcurrentQueue<uint>               _disconnected = new();
+
     public async Task RunAsync()
     {
+        server.SessionDisconnected += _disconnected.Enqueue;
+
         long freq     = System.Diagnostics.Stopwatch.Frequency;
         long interval = (long)(Framing.TickDelta * freq);
         long spinHead = (long)(0.002 * freq);
         long next     = System.Diagnostics.Stopwatch.GetTimestamp() + interval;
 
-        long   statWindow  = freq * 2; // log every 2 seconds
-        long   statNext    = System.Diagnostics.Stopwatch.GetTimestamp() + statWindow;
-        long   tickMaxUs   = 0;
-        long   tickTotalUs = 0;
-        int    tickCount   = 0;
+        long statWindow  = freq * 2;
+        long statNext    = System.Diagnostics.Stopwatch.GetTimestamp() + statWindow;
+        long tickMaxUs   = 0;
+        long tickTotalUs = 0;
+        int  tickCount   = 0;
 
         while (true)
         {
@@ -54,7 +68,7 @@ public class GameLoop(LiteNetServer server, WorldDatabase db)
             {
 #if DEBUG
                 long avgUs = tickCount > 0 ? tickTotalUs / tickCount : 0;
-                Console.WriteLine($"[tick] particles={_particleCount} sessions={server.Sessions.Count}" +
+                Console.WriteLine($"[tick] particles={_particleSnapsBuf.Length} sessions={server.SessionCount}" +
                                   $"  avg={avgUs}µs  max={tickMaxUs}µs  budget=50000µs");
 #endif
                 tickMaxUs = 0; tickTotalUs = 0; tickCount = 0;
@@ -72,22 +86,21 @@ public class GameLoop(LiteNetServer server, WorldDatabase db)
         }
     }
 
-
-    private struct SendState
-    {
-        public uint  LastSentTick;
-        public float LastSentX,  LastSentZ;
-        public float LastSentVX, LastSentVZ;
-    }
-
-    private readonly Dictionary<(uint, uint), SendState> _sendState = new();
-
     private void Tick()
     {
         server.PollEvents();
 
+        // Purge sendState entries for disconnected players (rare, so ToList alloc is fine)
+        while (_disconnected.TryDequeue(out uint id))
+        {
+            foreach (var key in _sendState.Keys.ToList())
+                if (key.Item1 == id || key.Item2 == id)
+                    _sendState.Remove(key);
+        }
+
         _tick++;
-        var sessions = server.Sessions;
+        int sessionCount = server.CopySessionsTo(_sessionsBuf);
+        var sessions     = _sessionsBuf.AsSpan(0, sessionCount);
 
         foreach (var s in sessions)
         {
@@ -103,28 +116,34 @@ public class GameLoop(LiteNetServer server, WorldDatabase db)
 
         int playerSnapSize   = Marshal.SizeOf<PlayerSnapshotQ>();
         int particleSnapSize = Marshal.SizeOf<ParticleSnapshot>();
+        int particleCount    = _particleSnapsBuf.Length;
+        _particles.Positions.CopyTo(_particleSnapsBuf);
 
         foreach (var observer in sessions)
         {
-            // ── Players: radius + FOV-bias + LOD + dead reckoning ─────────────
+            float observerSin = MathF.Sin(observer.Yaw);
+            float observerCos = MathF.Cos(observer.Yaw);
             int playerCount = 0;
+
             foreach (var entity in sessions)
             {
-                float dx      = entity.X - observer.X;
-                float dz      = entity.Z - observer.Z;
-                float rawDist = MathF.Sqrt(dx * dx + dz * dz);
+                float dx    = entity.X - observer.X;
+                float dz    = entity.Z - observer.Z;
+                float distSq = dx * dx + dz * dz;
 
-                // FOV-bias: entities behind observer get inflated effective distance
+                // squared-distance pre-cull: FOV bias can only increase effective distance
+                if (distSq > _playerViewRadiusSq && distSq > 0.000001f) continue;
+
                 float effectDist;
-                if (rawDist < 0.001f)
+                if (distSq < 0.000001f)
                 {
-                    effectDist = 0f; // same position — always include
+                    effectDist = 0f;
                 }
                 else
                 {
-                    float dot       = MathF.Sin(observer.Yaw) * (dx / rawDist)
-                                    + MathF.Cos(observer.Yaw) * (dz / rawDist);
-                    float fovFactor = (dot + 1f) / 2f;         // [0,1]: 1=front, 0=behind
+                    float rawDist   = MathF.Sqrt(distSq);
+                    float dot       = observerSin * (dx / rawDist) + observerCos * (dz / rawDist);
+                    float fovFactor = (dot + 1f) / 2f;
                     effectDist      = rawDist / (0.3f + 0.7f * fovFactor);
                 }
 
@@ -137,7 +156,7 @@ public class GameLoop(LiteNetServer server, WorldDatabase db)
                 _sendState.TryGetValue(key, out var state);
                 uint elapsed = _tick - state.LastSentTick;
 
-                if (elapsed < (uint)interval) continue;        // LOD gate
+                if (elapsed < (uint)interval) continue;
 
                 if (interval > 1 && state.LastSentTick > 0)
                 {
@@ -145,7 +164,7 @@ public class GameLoop(LiteNetServer server, WorldDatabase db)
                     float predZ = state.LastSentZ + state.LastSentVZ * elapsed * Framing.TickDelta;
                     float errSq = (entity.X - predX) * (entity.X - predX)
                                 + (entity.Z - predZ) * (entity.Z - predZ);
-                    if (errSq < _drThreshold * _drThreshold) continue;
+                    if (errSq < _drThresholdSq) continue;
                 }
 
                 float yawNorm = entity.Yaw % MathF.Tau;
@@ -167,13 +186,8 @@ public class GameLoop(LiteNetServer server, WorldDatabase db)
                 };
             }
 
-            // ── Particles: no culling — array index must be stable for client Lerp ──
-            // Any per-observer culling shifts indices and breaks index-based interpolation.
-            // 100 particles × 13 bytes = 1300 bytes/tick — negligible bandwidth cost.
-            int particleCount = _particleCount;
-            _particles.Positions.CopyTo(_particleSnapsBuf.AsSpan(0, particleCount));
-
-            // ── Coalescing: one packet per observer per tick ───────────────────
+            // Particle indices must be stable across ticks for client-side interpolation,
+            // so no per-observer culling — all particles are broadcast as-is.
             int worldLen    = playerCount   > 0 ? 4 + playerCount   * playerSnapSize   : 0;
             int particleLen = particleCount > 0 ? 4 + particleCount * particleSnapSize : 0;
             int totalLen    = worldLen + particleLen;
