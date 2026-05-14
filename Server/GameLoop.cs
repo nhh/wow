@@ -9,10 +9,8 @@ namespace Server;
 
 public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectGroup[] groups)
 {
-    private readonly ParticleSystem      _particles        = new(db.ParticleCount, db.LoadParticleScript());
-    private readonly PlayerSnapshotQ[]   _playerQSnapsBuf  = new PlayerSnapshotQ[64];
-    private readonly ParticleSnapshot[]  _particleSnapsBuf = new ParticleSnapshot[db.ParticleCount];
-    private readonly GameObjectSnapshot[] _goSnapsBuf       = new GameObjectSnapshot[groups.Sum(g => g.States.Length)];
+    private readonly PlayerSnapshotQ[]    _playerQSnapsBuf = new PlayerSnapshotQ[64];
+    private readonly GameObjectSnapshot[] _goSnapsBuf      = new GameObjectSnapshot[groups.Sum(g => g.States.Length)];
     private readonly Session[]          _sessionsBuf      = new Session[256];
     private readonly float _moveSpeed        = db.MoveSpeed;
     private readonly float _jumpSpeed        = db.JumpSpeed;
@@ -71,7 +69,7 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectGroup[] 
             {
 #if DEBUG
                 long avgUs = tickCount > 0 ? tickTotalUs / tickCount : 0;
-                Console.WriteLine($"[tick] particles={_particleSnapsBuf.Length} sessions={server.SessionCount}" +
+                Console.WriteLine($"[tick] gameObjects={_goSnapsBuf.Length} sessions={server.SessionCount}" +
                                   $"  avg={avgUs}µs  max={tickMaxUs}µs  budget=50000µs");
 #endif
                 tickMaxUs = 0; tickTotalUs = 0; tickCount = 0;
@@ -116,15 +114,11 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectGroup[] 
         }
 
         float t = _tick * Framing.TickDelta;
-        _particles.Update(_tick);
         foreach (var group in groups)
             group.Tick(_tick, t);
 
-        int playerSnapSize   = Marshal.SizeOf<PlayerSnapshotQ>();
-        int particleSnapSize = Marshal.SizeOf<ParticleSnapshot>();
-        int goSnapSize       = Marshal.SizeOf<GameObjectSnapshot>();
-        int particleCount    = _particleSnapsBuf.Length;
-        _particles.Positions.CopyTo(_particleSnapsBuf);
+        int playerSnapSize = Marshal.SizeOf<PlayerSnapshotQ>();
+        int goSnapSize     = Marshal.SizeOf<GameObjectSnapshot>();
 
         foreach (var observer in sessions)
         {
@@ -211,18 +205,18 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectGroup[] 
                     if (yawNorm < 0f) yawNorm += MathF.Tau;
                     _goSnapsBuf[goVisibleCount++] = new GameObjectSnapshot
                     {
-                        Id  = go.Id,
-                        X   = (short)(go.X * 100f),
-                        Y   = (short)(go.Y * 100f),
-                        Z   = (short)(go.Z * 100f),
-                        Yaw = (byte)(yawNorm / MathF.Tau * 256f),
+                        Id      = go.Id,
+                        X       = (short)(go.X * 100f),
+                        Y       = (short)(go.Y * 100f),
+                        Z       = (short)(go.Z * 100f),
+                        Yaw     = (byte)(yawNorm / MathF.Tau * 256f),
+                        ColorId = go.ColorId,
                     };
                 }
 
-            int worldLen    = playerCount      > 0 ? 4 + playerCount      * playerSnapSize   : 0;
-            int particleLen = particleCount    > 0 ? 4 + particleCount    * particleSnapSize : 0;
-            int goLen       = goVisibleCount   > 0 ? 4 + goVisibleCount   * goSnapSize       : 0;
-            int totalLen    = worldLen + particleLen + goLen;
+            int worldLen = playerCount    > 0 ? 4 + playerCount    * playerSnapSize : 0;
+            int goLen    = goVisibleCount > 0 ? 4 + goVisibleCount * goSnapSize    : 0;
+            int totalLen = worldLen + goLen;
             if (totalLen == 0) continue;
 
             byte[] coalesced = ArrayPool<byte>.Shared.Rent(totalLen);
@@ -232,9 +226,6 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectGroup[] 
                 if (playerCount > 0)
                     off += DatagramWriter.Write<PlayerSnapshotQ>(coalesced.AsSpan(), Opcode.SWorldSnapshot,
                         _playerQSnapsBuf.AsSpan(0, playerCount));
-                if (particleCount > 0)
-                    off += DatagramWriter.Write<ParticleSnapshot>(coalesced.AsSpan(off), Opcode.SParticleSnapshot,
-                        _particleSnapsBuf.AsSpan(0, particleCount));
                 if (goVisibleCount > 0)
                     DatagramWriter.Write<GameObjectSnapshot>(coalesced.AsSpan(off), Opcode.SGameObjectSnapshot,
                         _goSnapsBuf.AsSpan(0, goVisibleCount));
@@ -246,9 +237,8 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectGroup[] 
                 {
                     Span<(int off, int len)> segs =
                     [
-                        (0,                      worldLen),
-                        (worldLen,               particleLen),
-                        (worldLen + particleLen, goLen),
+                        (0,        worldLen),
+                        (worldLen, goLen),
                     ];
                     int pktStart = -1, pktLen = 0;
                     foreach (var (segOff, segLen) in segs)

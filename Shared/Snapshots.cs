@@ -26,34 +26,30 @@ public struct PlayerSnapshotQ  // 11 bytes — wire format (quantized)
     };
 }
 
-[StructLayout(LayoutKind.Sequential, Pack = 1)]
-public struct ParticleSnapshot  // 13 bytes
-{
-    public float X, Y, Z;
-    public byte  ColorId;   // 0 = default blue, 1-6 = highlight palette
-}
-
 // Runtime / interpolation type — client + script interface
 public struct GameObjectState
 {
     public uint  Id;
     public float X, Y, Z, Yaw;
+    public byte  ColorId;  // 0 = opaque cube, >0 = particle palette index
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public struct GameObjectSnapshot  // 11 bytes — wire format (quantized, same layout as PlayerSnapshotQ)
+public struct GameObjectSnapshot  // 12 bytes — wire format (quantized)
 {
     public uint  Id;      // 4
     public short X, Y, Z; // 6  — fixed-point ×100, ±327.68 m, 1 cm resolution
     public byte  Yaw;     // 1  — 256 steps
+    public byte  ColorId; // 1
 
     public GameObjectState Decode() => new()
     {
-        Id  = Id,
-        X   = X / 100f,
-        Y   = Y / 100f,
-        Z   = Z / 100f,
-        Yaw = Yaw / 256f * MathF.Tau,
+        Id      = Id,
+        X       = X / 100f,
+        Y       = Y / 100f,
+        Z       = Z / 100f,
+        Yaw     = Yaw / 256f * MathF.Tau,
+        ColorId = ColorId,
     };
 }
 

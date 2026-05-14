@@ -1,7 +1,6 @@
 using System.Globalization;
 using Microsoft.Data.Sqlite;
 using Shared;
-using Shared.Scripts;
 
 namespace Server;
 
@@ -9,7 +8,6 @@ public sealed class WorldDatabase : IDisposable
 {
     private readonly SqliteConnection _conn;
 
-    public int   ParticleCount      { get; set; }
     public float MoveSpeed          { get; private set; }
     public float WorldRadius        { get; private set; }
     public float JumpSpeed          { get; private set; }
@@ -78,7 +76,6 @@ public sealed class WorldDatabase : IDisposable
 
     private static readonly (string key, string value)[] Defaults =
     [
-        ("particle_count",       "1000"),
         ("move_speed",           "5"),
         ("world_radius",         "30"),
         ("jump_speed",           "9"),
@@ -86,7 +83,7 @@ public sealed class WorldDatabase : IDisposable
         ("player_view_radius",   "100"),
         ("particle_view_radius", "70"),
         ("dr_threshold",         "0.15"),
-        ("go_view_radius",       "50"),
+        ("go_view_radius",       "100"),
     ];
 
     private void SeedDefaults()
@@ -110,14 +107,17 @@ public sealed class WorldDatabase : IDisposable
 
     private static void SeedParticleScript(SqliteCommand cmd)
     {
+        // OR REPLACE so existing databases get the updated IGameObjectScript version
         cmd.CommandText = """
-            INSERT OR IGNORE INTO sqlar (name, mode, mtime, sz, data)
+            INSERT OR REPLACE INTO sqlar (name, mode, mtime, sz, data)
             VALUES ('scripts/particle.cs', 0, 0, 0, CAST($src AS BLOB))
             """;
         cmd.Parameters.Clear();
         cmd.Parameters.AddWithValue("$src", ParticleScriptSource);
         cmd.ExecuteNonQuery();
     }
+
+    private const int ParticleSeedCount = 1000;
 
     private static void SeedGameObjectScript(SqliteCommand cmd)
     {
@@ -135,6 +135,18 @@ public sealed class WorldDatabase : IDisposable
             """;
         cmd.Parameters.Clear();
         cmd.ExecuteNonQuery();
+
+        // Seed particle instances — script sets position/color each tick via UpdateBulk
+        cmd.CommandText = """
+            INSERT OR IGNORE INTO game_object_defs (id, type_name, x, y, z, yaw, script_name)
+            VALUES ($id, 'Particle', 0, 0, 0, 0, 'scripts/particle.cs')
+            """;
+        var pid = cmd.Parameters.Add("$id", SqliteType.Integer);
+        for (int i = 0; i < ParticleSeedCount; i++)
+        {
+            pid.Value = 1001 + i;
+            cmd.ExecuteNonQuery();
+        }
     }
 
     private void LoadConfig()
@@ -145,9 +157,8 @@ public sealed class WorldDatabase : IDisposable
         while (r.Read())
             Apply(r.GetString(0), r.GetString(1));
 
-        Console.WriteLine($"[db] particle_count={ParticleCount} move_speed={MoveSpeed} " +
-                          $"jump_speed={JumpSpeed} gravity={Gravity} " +
-                          $"player_view={PlayerViewRadius} particle_view={ParticleViewRadius}");
+        Console.WriteLine($"[db] move_speed={MoveSpeed} jump_speed={JumpSpeed} gravity={Gravity} " +
+                          $"player_view={PlayerViewRadius} go_view={GoViewRadius}");
     }
 
     private void Apply(string key, string raw)
@@ -155,7 +166,6 @@ public sealed class WorldDatabase : IDisposable
         float F() => float.Parse(raw, CultureInfo.InvariantCulture);
         switch (key)
         {
-            case "particle_count":       ParticleCount      = int.Parse(raw);  break;
             case "move_speed":           MoveSpeed          = F();             break;
             case "world_radius":         WorldRadius        = F();             break;
             case "jump_speed":           JumpSpeed          = F();             break;
@@ -172,14 +182,6 @@ public sealed class WorldDatabase : IDisposable
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = sql;
         cmd.ExecuteNonQuery();
-    }
-
-    public IParticleScript LoadParticleScript()
-    {
-        var dll = Path.Combine(ScriptsFolder, "scripts", "particle.dll");
-        Console.WriteLine($"[db] loading {dll}");
-        var type = ScriptLoader.LoadType<IParticleScript>(dll);
-        return ScriptLoader.CreateInstance<IParticleScript>(type);
     }
 
     public GameObjectGroup[] LoadGameObjects()
@@ -252,15 +254,17 @@ public sealed class WorldDatabase : IDisposable
 
         namespace Scripts;
 
-        public class ParticleScript : IParticleScript
+        public class ParticleScript : IGameObjectScript
         {
             private const float FormationDuration = 9f;
             private const float BlendDuration     = 2f;
             private const int   FormationCount    = 5;
 
-            public void Update(uint tick, float t, Span<ParticleSnapshot> positions)
+            public void Update(uint tick, float t, ref GameObjectState state) { }
+
+            public void UpdateBulk(uint tick, float t, Span<GameObjectState> states)
             {
-                int   n        = positions.Length;
+                int   n        = states.Length;
                 float cycleLen = FormationDuration * FormationCount;
                 float cyclePos = t % cycleLen;
                 int   formIdx  = (int)(cyclePos / FormationDuration);
@@ -283,7 +287,10 @@ public sealed class WorldDatabase : IDisposable
                         az = az + (bz - az) * blend;
                         if (blend > 0.5f) ac = bc;
                     }
-                    positions[i] = new ParticleSnapshot { X = ax, Y = ay, Z = az, ColorId = ac };
+                    states[i].X       = ax;
+                    states[i].Y       = ay;
+                    states[i].Z       = az;
+                    states[i].ColorId = ac;
                 }
             }
 

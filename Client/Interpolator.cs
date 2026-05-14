@@ -1,7 +1,5 @@
 using Shared;
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
-using System.Runtime.Intrinsics;
 
 namespace Client;
 
@@ -11,13 +9,13 @@ public class Interpolator
 
     public volatile uint MyPlayerId;
 
-    private readonly InterpolationBuffer<PlayerSnapshot>   _players     = new();
-    private readonly InterpolationBuffer<ParticleSnapshot> _particles   = new();
-    private readonly InterpolationBuffer<GameObjectState>  _gameObjects = new();
+    private readonly InterpolationBuffer<PlayerSnapshot>  _players     = new();
+    private readonly InterpolationBuffer<GameObjectState> _gameObjects = new();
 
     private long _lastSnapshotTick;
     public double SnapshotAgeMs =>
         (Stopwatch.GetTimestamp() - _lastSnapshotTick) * 1000.0 / Stopwatch.Frequency;
+
 
     // Latest received own-player snapshot — no interpolation delay, used for reconciliation
     private PlayerSnapshot _latestSelf;
@@ -54,13 +52,11 @@ public class Interpolator
 #endif
     }
 
-    public void UpdateParticles(ReadOnlySpan<ParticleSnapshot> snaps)
+    public void UpdateGameObjects(GameObjectState[] snaps)
     {
         _lastSnapshotTick = Stopwatch.GetTimestamp();
-        _particles.Push(snaps);
+        _gameObjects.Push(snaps);
     }
-
-    public void UpdateGameObjects(GameObjectState[] snaps) => _gameObjects.Push(snaps);
 
     public PlayerSnapshot[] Players
     {
@@ -71,14 +67,6 @@ public class Interpolator
             if (prev is null) return cur;
             return LerpPlayers(prev, cur, alpha);
         }
-    }
-
-    public ParticleSnapshot[] GetParticles()
-    {
-        var (prev, cur, alpha) = _particles.GetBracket(InterpolationDelay);
-        if (cur is null) return [];
-        if (prev is null) return cur;
-        return LerpParticles(prev, cur, alpha);
     }
 
     public GameObjectState[] GetGameObjects()
@@ -117,58 +105,6 @@ public class Interpolator
         return result;
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveOptimization)]
-    private static ParticleSnapshot[] LerpParticles(ParticleSnapshot[] prev, ParticleSnapshot[] cur, float alpha)
-    {
-        if (prev.Length != cur.Length) return cur;
-        var result = new ParticleSnapshot[cur.Length];
-
-        var vAlpha     = Vector128.Create(alpha);
-        var vMaxDistSq = Vector128.Create(9f);
-
-        int i = 0;
-        for (int end = cur.Length - 3; i <= end; i += 4)
-        {
-            var pX = Vector128.Create(prev[i].X, prev[i+1].X, prev[i+2].X, prev[i+3].X);
-            var pY = Vector128.Create(prev[i].Y, prev[i+1].Y, prev[i+2].Y, prev[i+3].Y);
-            var pZ = Vector128.Create(prev[i].Z, prev[i+1].Z, prev[i+2].Z, prev[i+3].Z);
-            var cX = Vector128.Create(cur[i].X,  cur[i+1].X,  cur[i+2].X,  cur[i+3].X);
-            var cY = Vector128.Create(cur[i].Y,  cur[i+1].Y,  cur[i+2].Y,  cur[i+3].Y);
-            var cZ = Vector128.Create(cur[i].Z,  cur[i+1].Z,  cur[i+2].Z,  cur[i+3].Z);
-
-            var dx   = cX - pX;
-            var dy   = cY - pY;
-            var dz   = cZ - pZ;
-            var mask = Vector128.GreaterThan(dx*dx + dy*dy + dz*dz, vMaxDistSq);
-
-            var rX = Vector128.ConditionalSelect(mask, cX, pX + dx * vAlpha);
-            var rY = Vector128.ConditionalSelect(mask, cY, pY + dy * vAlpha);
-            var rZ = Vector128.ConditionalSelect(mask, cZ, pZ + dz * vAlpha);
-
-            result[i]   = new ParticleSnapshot { X = rX[0], Y = rY[0], Z = rZ[0], ColorId = cur[i].ColorId };
-            result[i+1] = new ParticleSnapshot { X = rX[1], Y = rY[1], Z = rZ[1], ColorId = cur[i+1].ColorId };
-            result[i+2] = new ParticleSnapshot { X = rX[2], Y = rY[2], Z = rZ[2], ColorId = cur[i+2].ColorId };
-            result[i+3] = new ParticleSnapshot { X = rX[3], Y = rY[3], Z = rZ[3], ColorId = cur[i+3].ColorId };
-        }
-
-        for (; i < cur.Length; i++)
-        {
-            float dx = cur[i].X - prev[i].X;
-            float dy = cur[i].Y - prev[i].Y;
-            float dz = cur[i].Z - prev[i].Z;
-            if (dx*dx + dy*dy + dz*dz > 9f) { result[i] = cur[i]; continue; }
-            result[i] = new ParticleSnapshot
-            {
-                X       = prev[i].X + dx * alpha,
-                Y       = prev[i].Y + dy * alpha,
-                Z       = prev[i].Z + dz * alpha,
-                ColorId = cur[i].ColorId,
-            };
-        }
-
-        return result;
-    }
-
     private GameObjectState[] LerpGameObjects(GameObjectState[] prev, GameObjectState[] cur, float alpha)
     {
         _prevGoLookup.Clear();
@@ -187,11 +123,12 @@ public class Interpolator
             dyaw -= MathF.Round(dyaw / MathF.Tau) * MathF.Tau;
             result[i] = new GameObjectState
             {
-                Id  = c.Id,
-                X   = p.X + (c.X - p.X) * alpha,
-                Y   = p.Y + (c.Y - p.Y) * alpha,
-                Z   = p.Z + (c.Z - p.Z) * alpha,
-                Yaw = p.Yaw + dyaw * alpha,
+                Id      = c.Id,
+                X       = p.X + (c.X - p.X) * alpha,
+                Y       = p.Y + (c.Y - p.Y) * alpha,
+                Z       = p.Z + (c.Z - p.Z) * alpha,
+                Yaw     = p.Yaw + dyaw * alpha,
+                ColorId = c.ColorId,
             };
         }
         return result;

@@ -78,10 +78,6 @@ public class LiteNetClient : INetEventListener
                     _interp.UpdatePlayers(DecodePlayerSnaps(DatagramWriter.Read<PlayerSnapshotQ>(span)));
                     stride = Marshal.SizeOf<PlayerSnapshotQ>(); break;
 
-                case Opcode.SParticleSnapshot:
-                    _interp.UpdateParticles(DatagramWriter.Read<ParticleSnapshot>(span));
-                    stride = Marshal.SizeOf<ParticleSnapshot>(); break;
-
                 case Opcode.SGameObjectSnapshot:
                     _interp.UpdateGameObjects(DecodeGameObjectSnaps(DatagramWriter.Read<GameObjectSnapshot>(span)));
                     stride = Marshal.SizeOf<GameObjectSnapshot>(); break;

@@ -7,7 +7,6 @@ public enum Opcode : ushort
     SPlayerJoined     = 100,
     SPlayerLeft       = 101,
     SWorldSnapshot      = 200,
-    SParticleSnapshot   = 201,
     SGameObjectSnapshot = 202,
 }
 

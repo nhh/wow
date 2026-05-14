@@ -221,32 +221,29 @@ public class Renderer(Interpolator interpolator)
             gl.DrawElements(PrimitiveType.Triangles, 36, DrawElementsType.UnsignedInt, (void*)0);
         }
 
-        // Particles — color is authoritative from server (ColorId in snapshot)
-        foreach (var p in interpolator.GetParticles())
-        {
-            var mvp = Matrix4x4.CreateScale(0.15f) *
-                      Matrix4x4.CreateTranslation(p.X, p.Y, p.Z) * vp;
-            SetMvp(gl, mvp);
-            if (p.ColorId != 0)
-            {
-                var (r, g, b) = PlayerColor(p.ColorId);
-                gl.Uniform3(_colorLoc, r, g, b);
-            }
-            else
-                gl.Uniform3(_colorLoc, 0.3f, 0.6f, 1.0f);
-            gl.DrawElements(PrimitiveType.Triangles, 36, DrawElementsType.UnsignedInt, (void*)0);
-        }
-
-        // Game objects — light gray cubes driven by server scripts
+        // Game objects — ColorId > 0 means particle (small colored cube, no frustum cull)
+        //                ColorId == 0 means scripted object (gray cube, frustum culled)
         Span<Vector4> frustum = stackalloc Vector4[6];
         ExtractFrustumPlanes(vp, frustum);
         foreach (var go in interpolator.GetGameObjects())
         {
-            if (!InFrustum(frustum, go.X, go.Y, go.Z, 0.9f)) continue;
-            var mvp = Matrix4x4.CreateRotationY(go.Yaw) *
+            Matrix4x4 mvp;
+            if (go.ColorId > 0)
+            {
+                mvp = Matrix4x4.CreateScale(0.15f) *
                       Matrix4x4.CreateTranslation(go.X, go.Y, go.Z) * vp;
-            SetMvp(gl, mvp);
-            gl.Uniform3(_colorLoc, 0.85f, 0.85f, 0.85f);
+                SetMvp(gl, mvp);
+                var (r, g, b) = PlayerColor(go.ColorId);
+                gl.Uniform3(_colorLoc, r, g, b);
+            }
+            else
+            {
+                if (!InFrustum(frustum, go.X, go.Y, go.Z, 0.9f)) continue;
+                mvp = Matrix4x4.CreateRotationY(go.Yaw) *
+                      Matrix4x4.CreateTranslation(go.X, go.Y, go.Z) * vp;
+                SetMvp(gl, mvp);
+                gl.Uniform3(_colorLoc, 0.85f, 0.85f, 0.85f);
+            }
             gl.DrawElements(PrimitiveType.Triangles, 36, DrawElementsType.UnsignedInt, (void*)0);
         }
     }
