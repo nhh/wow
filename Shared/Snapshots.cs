@@ -3,10 +3,27 @@ using System.Runtime.InteropServices;
 namespace Shared;
 
 [StructLayout(LayoutKind.Sequential, Pack = 1)]
-public struct PlayerSnapshot   // 20 bytes
+public struct PlayerSnapshot   // 20 bytes — interpolation / rendering only, not wire
 {
     public uint  PlayerId;
     public float X, Y, Z, Yaw;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 1)]
+public struct PlayerSnapshotQ  // 11 bytes — wire format (quantized)
+{
+    public uint  PlayerId; // 4
+    public short X, Y, Z;  // 6  — fixed-point ×100, ±327.68 m, 1 cm resolution
+    public byte  Yaw;      // 1  — 256 steps = 1.4° resolution
+
+    public PlayerSnapshot Decode() => new()
+    {
+        PlayerId = PlayerId,
+        X   = X / 100f,
+        Y   = Y / 100f,
+        Z   = Z / 100f,
+        Yaw = Yaw / 256f * MathF.Tau,
+    };
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 1)]

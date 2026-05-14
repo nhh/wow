@@ -165,7 +165,8 @@ public class Interpolator
 
     private static ParticleSnapshot[] Lerp(ParticleSnapshot[] prev, ParticleSnapshot[] cur, float alpha)
     {
-        int interpCount = Math.Min(prev.Length, cur.Length);
+        if (prev.Length != cur.Length) return cur;
+        int interpCount = cur.Length;
         var result = new ParticleSnapshot[cur.Length];
 
         for (int i = 0; i < interpCount; i++)

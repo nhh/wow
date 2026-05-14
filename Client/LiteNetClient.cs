@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using LiteNetLib;
 using MemoryPack;
 using Shared;
@@ -53,27 +54,50 @@ public class LiteNetClient : INetEventListener
     public void OnNetworkReceive(NetPeer peer, NetPacketReader reader,
                                  byte channel, DeliveryMethod method)
     {
-        var bytes = reader.GetRemainingBytes();
-        if (bytes.Length < 2) { reader.Recycle(); return; }
+        var bytes  = reader.GetRemainingBytes();
+        int offset = 0;
 
-        var span = bytes.AsSpan();
-        var op   = (Opcode)BitConverter.ToUInt16(span);
-        switch (op)
+        // Loop handles coalesced packets: multiple messages in one UDP payload
+        while (offset + 4 <= bytes.Length)
         {
-            case Opcode.SWelcome:
-                _interp.MyPlayerId = DatagramWriter.Read<WelcomeMsg>(span)[0].PlayerId;
+            var span  = bytes.AsSpan(offset);
+            var op    = (Opcode)BitConverter.ToUInt16(span);
+            int count = BitConverter.ToUInt16(span[2..]);
+            int stride;
+
+            switch (op)
+            {
+                case Opcode.SWelcome:
+                    _interp.MyPlayerId = DatagramWriter.Read<WelcomeMsg>(span)[0].PlayerId;
 #if DEBUG
-                Console.Error.WriteLine($"Welcome — PlayerId={_interp.MyPlayerId}");
+                    Console.Error.WriteLine($"Welcome — PlayerId={_interp.MyPlayerId}");
 #endif
-                break;
-            case Opcode.SWorldSnapshot:
-                _interp.UpdatePlayers(DatagramWriter.Read<PlayerSnapshot>(span));
-                break;
-            case Opcode.SParticleSnapshot:
-                _interp.UpdateParticles(DatagramWriter.Read<ParticleSnapshot>(span));
-                break;
+                    stride = Marshal.SizeOf<WelcomeMsg>(); break;
+
+                case Opcode.SWorldSnapshot:
+                    _interp.UpdatePlayers(DecodePlayerSnaps(DatagramWriter.Read<PlayerSnapshotQ>(span)));
+                    stride = Marshal.SizeOf<PlayerSnapshotQ>(); break;
+
+                case Opcode.SParticleSnapshot:
+                    _interp.UpdateParticles(DatagramWriter.Read<ParticleSnapshot>(span));
+                    stride = Marshal.SizeOf<ParticleSnapshot>(); break;
+
+                default: stride = -1; break;
+            }
+
+            if (stride < 0) break;
+            offset += 4 + count * stride;
         }
+
         reader.Recycle();
+    }
+
+    private static PlayerSnapshot[] DecodePlayerSnaps(ReadOnlySpan<PlayerSnapshotQ> qSnaps)
+    {
+        var result = new PlayerSnapshot[qSnaps.Length];
+        for (int i = 0; i < qSnaps.Length; i++)
+            result[i] = qSnaps[i].Decode();
+        return result;
     }
 
     public void OnConnectionRequest(ConnectionRequest request) { }

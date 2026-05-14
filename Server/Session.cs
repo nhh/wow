@@ -12,7 +12,9 @@ public class Session(NetPeer peer, uint id)
     public float Y         = 0;
     public float Z         = ((id - 1) / 8) * 6f;
     public float Yaw       = 0;
+    public float VelocityX = 0;
     public float VelocityY = 0;
+    public float VelocityZ = 0;
 
     private readonly Channel<CInputState> _inputs =
         Channel.CreateBounded<CInputState>(64);
