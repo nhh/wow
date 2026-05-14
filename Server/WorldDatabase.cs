@@ -16,6 +16,7 @@ public sealed class WorldDatabase : IDisposable
     public float PlayerViewRadius   { get; private set; }
     public float ParticleViewRadius { get; private set; }
     public float DRThreshold        { get; private set; }
+    public float GoViewRadius       { get; private set; }
 
     public static string DefaultPath =>
         Path.Combine(AppContext.BaseDirectory, "world.db");
@@ -82,6 +83,7 @@ public sealed class WorldDatabase : IDisposable
         ("player_view_radius",   "100"),
         ("particle_view_radius", "70"),
         ("dr_threshold",         "0.15"),
+        ("go_view_radius",       "50"),
     ];
 
     private void SeedDefaults()
@@ -158,6 +160,7 @@ public sealed class WorldDatabase : IDisposable
             case "player_view_radius":   PlayerViewRadius   = F();             break;
             case "particle_view_radius": ParticleViewRadius = F();             break;
             case "dr_threshold":         DRThreshold        = F();             break;
+            case "go_view_radius":       GoViewRadius       = F();             break;
         }
     }
 

@@ -20,6 +20,7 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectInstance
     private readonly float _playerViewRadius = db.PlayerViewRadius;
     private readonly float _playerViewRadiusSq = db.PlayerViewRadius * db.PlayerViewRadius;
     private readonly float _drThresholdSq    = db.DRThreshold * db.DRThreshold;
+    private readonly float _goViewRadiusSq   = db.GoViewRadius * db.GoViewRadius;
     private uint _tick;
 
     private const int NoGCBudget = 4 * 1024 * 1024;
@@ -122,22 +123,7 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectInstance
         int particleSnapSize = Marshal.SizeOf<ParticleSnapshot>();
         int goSnapSize       = Marshal.SizeOf<GameObjectSnapshot>();
         int particleCount    = _particleSnapsBuf.Length;
-        int goCount          = _goSnapsBuf.Length;
         _particles.Positions.CopyTo(_particleSnapsBuf);
-        for (int i = 0; i < goCount; i++)
-        {
-            var go       = gameObjects[i];
-            float yawNorm = go.Yaw % MathF.Tau;
-            if (yawNorm < 0f) yawNorm += MathF.Tau;
-            _goSnapsBuf[i] = new GameObjectSnapshot
-            {
-                Id  = go.Id,
-                X   = (short)(go.X * 100f),
-                Y   = (short)(go.Y * 100f),
-                Z   = (short)(go.Z * 100f),
-                Yaw = (byte)(yawNorm / MathF.Tau * 256f),
-            };
-        }
 
         foreach (var observer in sessions)
         {
@@ -211,11 +197,30 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectInstance
                 };
             }
 
-            // Particle/GO indices must be stable across ticks for client-side interpolation,
-            // so no per-observer culling — all are broadcast as-is.
-            int worldLen    = playerCount   > 0 ? 4 + playerCount   * playerSnapSize   : 0;
-            int particleLen = particleCount > 0 ? 4 + particleCount * particleSnapSize : 0;
-            int goLen       = goCount       > 0 ? 4 + goCount       * goSnapSize       : 0;
+            // Game objects: per-observer distance cull (go_view_radius from game_config).
+            // Particles have no IDs so indices must be stable — no culling there.
+            int goVisibleCount = 0;
+            for (int i = 0; i < gameObjects.Length; i++)
+            {
+                var go = gameObjects[i];
+                float goDx = go.X - observer.X;
+                float goDz = go.Z - observer.Z;
+                if (goDx * goDx + goDz * goDz > _goViewRadiusSq) continue;
+                float yawNorm = go.Yaw % MathF.Tau;
+                if (yawNorm < 0f) yawNorm += MathF.Tau;
+                _goSnapsBuf[goVisibleCount++] = new GameObjectSnapshot
+                {
+                    Id  = go.Id,
+                    X   = (short)(go.X * 100f),
+                    Y   = (short)(go.Y * 100f),
+                    Z   = (short)(go.Z * 100f),
+                    Yaw = (byte)(yawNorm / MathF.Tau * 256f),
+                };
+            }
+
+            int worldLen    = playerCount      > 0 ? 4 + playerCount      * playerSnapSize   : 0;
+            int particleLen = particleCount    > 0 ? 4 + particleCount    * particleSnapSize : 0;
+            int goLen       = goVisibleCount   > 0 ? 4 + goVisibleCount   * goSnapSize       : 0;
             int totalLen    = worldLen + particleLen + goLen;
             if (totalLen == 0) continue;
 
@@ -229,9 +234,9 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectInstance
                 if (particleCount > 0)
                     off += DatagramWriter.Write<ParticleSnapshot>(coalesced.AsSpan(off), Opcode.SParticleSnapshot,
                         _particleSnapsBuf.AsSpan(0, particleCount));
-                if (goCount > 0)
+                if (goVisibleCount > 0)
                     DatagramWriter.Write<GameObjectSnapshot>(coalesced.AsSpan(off), Opcode.SGameObjectSnapshot,
-                        _goSnapsBuf.AsSpan(0, goCount));
+                        _goSnapsBuf.AsSpan(0, goVisibleCount));
                 observer.SendSnapshot(coalesced, totalLen);
             }
             finally { ArrayPool<byte>.Shared.Return(coalesced); }
