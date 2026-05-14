@@ -6,7 +6,6 @@ dotnet publish "$PSScriptRoot\Server\Server.csproj" `
     -c Release `
     -r win-x64 `
     --self-contained true `
-    /p:PublishAot=true `
     /p:StripSymbols=true `
     -o "$out\Server"
 if (-not $?) { exit 1 }

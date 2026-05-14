@@ -16,7 +16,4 @@ public static class Framing
     public const int   DatagramHeaderSize = sizeof(ushort) + sizeof(ushort);
     public const float TickRate         = 20f;
     public const float TickDelta        = 1f / TickRate;
-    public const float MoveSpeed        = 5f;
-    public const int   ParticleCount    = 1000;
-    public const float WorldRadius      = 30f;
 }

@@ -1,11 +1,13 @@
 using System.Runtime;
 using Server;
-using Shared;
 
 GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
 
-int particleCount = args.Length > 0 ? int.Parse(args[0]) : Framing.ParticleCount;
+Console.WriteLine($"[db] path={WorldDatabase.DefaultPath}");
+using var db = new WorldDatabase();
+if (args.Length > 0 && int.TryParse(args[0], out int overrideCount))
+    db.ParticleCount = overrideCount;
 
 var server   = new LiteNetServer();
-var gameLoop = new GameLoop(server, particleCount);
+var gameLoop = new GameLoop(server, db);
 await gameLoop.RunAsync();
