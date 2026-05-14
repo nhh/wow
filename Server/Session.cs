@@ -28,7 +28,10 @@ public class Session(NetPeer peer, uint id)
     public bool EnqueueInput(CInputState input) => _inputs.Writer.TryWrite(input);
 
     public void SendSnapshot(byte[] data, int length)
-        => peer.Send(data, 0, length, DeliveryMethod.ReliableOrdered);
+        => peer.Send(data, 0, length, DeliveryMethod.Unreliable);
+
+    public void SendSnapshot(byte[] data, int start, int length)
+        => peer.Send(data, start, length, DeliveryMethod.Unreliable);
 
     public void SendWelcome()
     {

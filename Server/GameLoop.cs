@@ -24,6 +24,7 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectInstance
     private uint _tick;
 
     private const int NoGCBudget = 4 * 1024 * 1024;
+    private const int MtuPayload = 1400;
 
     private struct SendState
     {
@@ -237,7 +238,33 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectInstance
                 if (goVisibleCount > 0)
                     DatagramWriter.Write<GameObjectSnapshot>(coalesced.AsSpan(off), Opcode.SGameObjectSnapshot,
                         _goSnapsBuf.AsSpan(0, goVisibleCount));
-                observer.SendSnapshot(coalesced, totalLen);
+                if (totalLen <= MtuPayload)
+                {
+                    observer.SendSnapshot(coalesced, totalLen);
+                }
+                else
+                {
+                    Span<(int off, int len)> segs =
+                    [
+                        (0,                      worldLen),
+                        (worldLen,               particleLen),
+                        (worldLen + particleLen, goLen),
+                    ];
+                    int pktStart = -1, pktLen = 0;
+                    foreach (var (segOff, segLen) in segs)
+                    {
+                        if (segLen == 0) continue;
+                        if (pktStart < 0) pktStart = segOff;
+                        if (pktLen > 0 && pktLen + segLen > MtuPayload)
+                        {
+                            observer.SendSnapshot(coalesced, pktStart, pktLen);
+                            pktStart = segOff;
+                            pktLen   = 0;
+                        }
+                        pktLen += segLen;
+                    }
+                    if (pktLen > 0) observer.SendSnapshot(coalesced, pktStart, pktLen);
+                }
             }
             finally { ArrayPool<byte>.Shared.Return(coalesced); }
         }
