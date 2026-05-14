@@ -16,6 +16,7 @@ public class InputHandler
     private bool  _wasSpacePressed;
 
     private const float ReconcileHardSnap = 10f;
+    private const float MoveSpeed         = 5f;   // Stage 4: replaced by SConfigSnapshot
     private const float Gravity           = 20f;
     private const float JumpSpeed         = 9f;
 
@@ -74,8 +75,8 @@ public class InputHandler
         float dz = fwd * MathF.Cos(Yaw) - str * MathF.Sin(Yaw);
         float len = MathF.Sqrt(dx * dx + dz * dz);
         if (len > 0) { dx /= len; dz /= len; }
-        LocalX += dx * Framing.MoveSpeed * (float)dt;
-        LocalZ += dz * Framing.MoveSpeed * (float)dt;
+        LocalX += dx * MoveSpeed * (float)dt;
+        LocalZ += dz * MoveSpeed * (float)dt;
 
         // Y prediction (mirrors server gravity/jump logic)
         if (jump) VelocityY = JumpSpeed;
