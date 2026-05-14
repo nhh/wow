@@ -1,6 +1,14 @@
 using System.Runtime;
 using Server;
 
+var logPath = Path.Combine(AppContext.BaseDirectory, "server-crash.log");
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+{
+    var msg = $"[{DateTime.UtcNow:O}] {e.ExceptionObject}\n";
+    File.AppendAllText(logPath, msg);
+    Console.Error.WriteLine(msg);
+};
+
 GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
 
 Console.WriteLine($"[db] path={WorldDatabase.DefaultPath}");

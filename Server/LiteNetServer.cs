@@ -13,7 +13,7 @@ public class LiteNetServer : INetEventListener
 
     public LiteNetServer()
     {
-        _manager = new NetManager(this);
+        _manager = new NetManager(this) { MtuOverride = 1400 };
         _manager.Start(Framing.Port);
 #if DEBUG
         Console.WriteLine($"Listening on :{Framing.Port}");

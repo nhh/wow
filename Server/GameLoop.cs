@@ -24,7 +24,7 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectInstance
     private uint _tick;
 
     private const int NoGCBudget = 4 * 1024 * 1024;
-    private const int MtuPayload = 1400;
+    private const int MtuPayload = 1390; // MtuOverride(1400) minus LiteNetLib header overhead
 
     private struct SendState
     {
