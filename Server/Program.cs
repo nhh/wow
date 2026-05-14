@@ -8,6 +8,7 @@ using var db = new WorldDatabase();
 if (args.Length > 0 && int.TryParse(args[0], out int overrideCount))
     db.ParticleCount = overrideCount;
 
-var server   = new LiteNetServer();
-var gameLoop = new GameLoop(server, db);
+var server      = new LiteNetServer();
+var gameObjects = db.LoadGameObjects();
+var gameLoop    = new GameLoop(server, db, gameObjects);
 await gameLoop.RunAsync();

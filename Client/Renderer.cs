@@ -236,6 +236,16 @@ public class Renderer(Interpolator interpolator)
                 gl.Uniform3(_colorLoc, 0.3f, 0.6f, 1.0f);
             gl.DrawElements(PrimitiveType.Triangles, 36, DrawElementsType.UnsignedInt, (void*)0);
         }
+
+        // Game objects — light gray cubes driven by server scripts
+        foreach (var go in interpolator.GetGameObjects())
+        {
+            var mvp = Matrix4x4.CreateRotationY(go.Yaw) *
+                      Matrix4x4.CreateTranslation(go.X, go.Y, go.Z) * vp;
+            SetMvp(gl, mvp);
+            gl.Uniform3(_colorLoc, 0.85f, 0.85f, 0.85f);
+            gl.DrawElements(PrimitiveType.Triangles, 36, DrawElementsType.UnsignedInt, (void*)0);
+        }
     }
 
     private unsafe void SetMvp(GL gl, Matrix4x4 m)

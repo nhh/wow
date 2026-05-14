@@ -60,6 +60,15 @@ public sealed class WorldDatabase : IDisposable
                 sz    INTEGER,
                 data  BLOB
             );
+            CREATE TABLE IF NOT EXISTS game_object_defs (
+                id          INTEGER PRIMARY KEY,
+                type_name   TEXT    NOT NULL,
+                x           REAL    DEFAULT 0,
+                y           REAL    DEFAULT 0,
+                z           REAL    DEFAULT 0,
+                yaw         REAL    DEFAULT 0,
+                script_name TEXT    NOT NULL REFERENCES sqlar(name)
+            );
             """);
     }
 
@@ -90,6 +99,7 @@ public sealed class WorldDatabase : IDisposable
         }
         Execute("INSERT OR IGNORE INTO zones (id, name) VALUES (1, 'default')");
         SeedParticleScript(cmd);
+        SeedGameObjectScript(cmd);
         tx.Commit();
     }
 
@@ -101,6 +111,24 @@ public sealed class WorldDatabase : IDisposable
             """;
         cmd.Parameters.Clear();
         cmd.Parameters.AddWithValue("$src", ParticleScriptSource);
+        cmd.ExecuteNonQuery();
+    }
+
+    private static void SeedGameObjectScript(SqliteCommand cmd)
+    {
+        cmd.CommandText = """
+            INSERT OR IGNORE INTO sqlar (name, mode, mtime, sz, data)
+            VALUES ('scripts/go/spinning_box.cs', 0, 0, 0, CAST($src AS BLOB))
+            """;
+        cmd.Parameters.Clear();
+        cmd.Parameters.AddWithValue("$src", GameObjectScriptSource);
+        cmd.ExecuteNonQuery();
+
+        cmd.CommandText = """
+            INSERT OR IGNORE INTO game_object_defs (id, type_name, x, y, z, yaw, script_name)
+            VALUES (1, 'SpinningBox', 5, 0, 5, 0, 'scripts/go/spinning_box.cs')
+            """;
+        cmd.Parameters.Clear();
         cmd.ExecuteNonQuery();
     }
 
@@ -158,7 +186,81 @@ public sealed class WorldDatabase : IDisposable
         return script;
     }
 
+    public GameObjectInstance[] LoadGameObjects()
+    {
+        // Collect all defs with their script sources
+        var defs    = new List<(uint id, float x, float y, float z, float yaw, string? source)>();
+        var sources = new Dictionary<string, string>(); // scriptName → C# source
+
+        using (var scriptCmd = _conn.CreateCommand())
+        {
+            scriptCmd.CommandText = "SELECT CAST(data AS TEXT) FROM sqlar WHERE name = $n";
+            var nameParam = scriptCmd.Parameters.Add("$n", Microsoft.Data.Sqlite.SqliteType.Text);
+
+            using var defCmd = _conn.CreateCommand();
+            defCmd.CommandText = "SELECT id, x, y, z, yaw, script_name FROM game_object_defs";
+            using var r = defCmd.ExecuteReader();
+            while (r.Read())
+            {
+                uint  id         = (uint)r.GetInt64(0);
+                float x          = (float)r.GetDouble(1);
+                float y          = (float)r.GetDouble(2);
+                float z          = (float)r.GetDouble(3);
+                float yaw        = (float)r.GetDouble(4);
+                string scriptName = r.GetString(5);
+
+                if (!sources.ContainsKey(scriptName))
+                {
+                    nameParam.Value = scriptName;
+                    var src = scriptCmd.ExecuteScalar() as string;
+                    if (src is null)
+                    {
+                        Console.WriteLine($"[db] warning: script '{scriptName}' not found in sqlar, skipping GO {id}");
+                        defs.Add((id, x, y, z, yaw, null));
+                        continue;
+                    }
+                    sources[scriptName] = src;
+                }
+                defs.Add((id, x, y, z, yaw, sources[scriptName]));
+            }
+        }
+
+        // Each GO gets its own compiled script instance (own private state)
+        var validDefs = defs.Where(d => d.source is not null).ToList();
+        if (validDefs.Count == 0) return [];
+
+        var entries  = validDefs.Select(d => (d.source!, "Scripts.GameObjectScript")).ToList();
+        var compiled = ScriptCompiler.CompileAll<Shared.Scripts.IGameObjectScript>(entries);
+
+        var instances = new GameObjectInstance[validDefs.Count];
+        for (int i = 0; i < validDefs.Count; i++)
+        {
+            var (id, x, y, z, yaw, _) = validDefs[i];
+            instances[i] = new GameObjectInstance(id, x, y, z, yaw, compiled[i]);
+        }
+
+        Console.WriteLine($"[db] loaded {instances.Length} game object(s)");
+        return instances;
+    }
+
     public void Dispose() => _conn.Dispose();
+
+    private const string GameObjectScriptSource = """
+        using System;
+        using Shared;
+        using Shared.Scripts;
+
+        namespace Scripts;
+
+        public class GameObjectScript : IGameObjectScript
+        {
+            public void Update(uint tick, float t, ref GameObjectState state)
+            {
+                state.Yaw = t * 1.0f;
+                state.Y   = 0.5f + MathF.Sin(t * 2f) * 0.3f;
+            }
+        }
+        """;
 
     private const string ParticleScriptSource = """
         using System;

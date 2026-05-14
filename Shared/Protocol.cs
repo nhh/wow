@@ -6,8 +6,9 @@ public enum Opcode : ushort
     SWelcome          = 10,
     SPlayerJoined     = 100,
     SPlayerLeft       = 101,
-    SWorldSnapshot    = 200,
-    SParticleSnapshot = 201,
+    SWorldSnapshot      = 200,
+    SParticleSnapshot   = 201,
+    SGameObjectSnapshot = 202,
 }
 
 public static class Framing

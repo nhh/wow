@@ -9,8 +9,9 @@ public class Interpolator
 
     public volatile uint MyPlayerId;
 
-    private readonly InterpolationBuffer<PlayerSnapshot>   _players   = new();
-    private readonly InterpolationBuffer<ParticleSnapshot> _particles = new();
+    private readonly InterpolationBuffer<PlayerSnapshot>   _players     = new();
+    private readonly InterpolationBuffer<ParticleSnapshot> _particles   = new();
+    private readonly InterpolationBuffer<GameObjectState>  _gameObjects = new();
 
     private long _lastSnapshotTick;
     public double SnapshotAgeMs =>
@@ -54,6 +55,8 @@ public class Interpolator
         _particles.Push(snaps);
     }
 
+    public void UpdateGameObjects(GameObjectState[] snaps) => _gameObjects.Push(snaps);
+
     public PlayerSnapshot[] Players
     {
         get
@@ -71,6 +74,14 @@ public class Interpolator
         if (cur is null) return [];
         if (prev is null) return cur;
         return LerpParticles(prev, cur, alpha);
+    }
+
+    public GameObjectState[] GetGameObjects()
+    {
+        var (prev, cur, alpha) = _gameObjects.GetBracket(InterpolationDelay);
+        if (cur is null) return [];
+        if (prev is null) return cur;
+        return LerpGameObjects(prev, cur, alpha);
     }
 
     private static PlayerSnapshot[] LerpPlayers(PlayerSnapshot[] prev, PlayerSnapshot[] cur, float alpha)
@@ -113,6 +124,29 @@ public class Interpolator
                 Z       = prev[i].Z + dz * alpha,
                 ColorId = cur[i].ColorId,
             };
+        }
+        return result;
+    }
+
+    private static GameObjectState[] LerpGameObjects(GameObjectState[] prev, GameObjectState[] cur, float alpha)
+    {
+        var result = new GameObjectState[cur.Length];
+        for (int i = 0; i < cur.Length; i++)
+        {
+            var  c     = cur[i];
+            bool found = false;
+            GameObjectState p = default;
+            foreach (var ps in prev) if (ps.Id == c.Id) { p = ps; found = true; break; }
+            float dyaw = c.Yaw - p.Yaw;
+            dyaw -= MathF.Round(dyaw / MathF.Tau) * MathF.Tau;
+            result[i] = found ? new GameObjectState
+            {
+                Id  = c.Id,
+                X   = p.X + (c.X - p.X) * alpha,
+                Y   = p.Y + (c.Y - p.Y) * alpha,
+                Z   = p.Z + (c.Z - p.Z) * alpha,
+                Yaw = p.Yaw + dyaw * alpha,
+            } : c;
         }
         return result;
     }

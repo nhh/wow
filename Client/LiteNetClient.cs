@@ -82,6 +82,10 @@ public class LiteNetClient : INetEventListener
                     _interp.UpdateParticles(DatagramWriter.Read<ParticleSnapshot>(span));
                     stride = Marshal.SizeOf<ParticleSnapshot>(); break;
 
+                case Opcode.SGameObjectSnapshot:
+                    _interp.UpdateGameObjects(DecodeGameObjectSnaps(DatagramWriter.Read<GameObjectSnapshot>(span)));
+                    stride = Marshal.SizeOf<GameObjectSnapshot>(); break;
+
                 default: stride = -1; break;
             }
 
@@ -97,6 +101,14 @@ public class LiteNetClient : INetEventListener
         var result = new PlayerSnapshot[qSnaps.Length];
         for (int i = 0; i < qSnaps.Length; i++)
             result[i] = qSnaps[i].Decode();
+        return result;
+    }
+
+    private static GameObjectState[] DecodeGameObjectSnaps(ReadOnlySpan<GameObjectSnapshot> snaps)
+    {
+        var result = new GameObjectState[snaps.Length];
+        for (int i = 0; i < snaps.Length; i++)
+            result[i] = snaps[i].Decode();
         return result;
     }
 
