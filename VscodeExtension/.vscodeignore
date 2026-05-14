@@ -1,0 +1,7 @@
+src/
+tsconfig.json
+.gitignore
+**/*.map
+node_modules/**
+!node_modules/sql.js/dist/sql-wasm.js
+!node_modules/sql.js/dist/sql-wasm.wasm

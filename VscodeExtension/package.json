@@ -1,0 +1,38 @@
+{
+  "name": "worlddb-fs",
+  "displayName": "World DB Filesystem",
+  "description": "SQLite SQLAR virtual filesystem — browse and edit world.db scripts directly in VS Code",
+  "version": "0.0.1",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "activationEvents": [
+    "onFileSystem:worlddb"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "worlddb.open",
+        "title": "World DB: Open world.db"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^20.0.0",
+    "@types/sql.js": "^1.4.11",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.5.0"
+  },
+  "dependencies": {
+    "js-yaml": "^4.1.1",
+    "sql.js": "^1.12.0"
+  }
+}
