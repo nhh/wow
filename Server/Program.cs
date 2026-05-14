@@ -13,6 +13,7 @@ GCSettings.LatencyMode = GCLatencyMode.SustainedLowLatency;
 
 Console.WriteLine($"[db] path={WorldDatabase.DefaultPath}");
 using var db = new WorldDatabase();
+if (args.Contains("--seed")) { Console.WriteLine("[db] Seeded. Done."); return; }
 
 var server      = new LiteNetServer();
 var gameObjects = db.LoadGameObjects();

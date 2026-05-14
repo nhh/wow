@@ -26,6 +26,10 @@ dotnet publish "$PSScriptRoot\Client\Client.csproj" `
     -o "$out\Client"
 if ($LASTEXITCODE -ne 0) { Fail "Client publish fehlgeschlagen (exit $LASTEXITCODE)" }
 
+Write-Host "==> Seede root world.db"
+dotnet run --project "$PSScriptRoot\Server\Server.csproj" -- --seed
+if ($LASTEXITCODE -ne 0) { Fail "Server --seed fehlgeschlagen (exit $LASTEXITCODE)" }
+
 Write-Host "==> Kopiere world.db"
 $srcDb = "$PSScriptRoot\world.db"
 $dstDb = "$out\Server\world.db"
