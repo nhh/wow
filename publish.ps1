@@ -1,11 +1,20 @@
 $ErrorActionPreference = "Stop"
-$out = "$PSScriptRoot\publish"
+$out   = "$PSScriptRoot\publish"
+$srcDb = "$PSScriptRoot\world.db"
 
 function Fail($msg) {
     Write-Host ""
     Write-Host "FEHLER: $msg" -ForegroundColor Red
     Read-Host "Enter zum Schliessen"
     exit 1
+}
+
+function CompileScripts($db, $scriptsOut) {
+    dotnet run --project "$PSScriptRoot\ScriptCompiler\ScriptCompiler.csproj" `
+        -c Release -- $db $scriptsOut
+    if ($LASTEXITCODE -ne 0) { Fail "ScriptCompiler fehlgeschlagen fuer '$db' (exit $LASTEXITCODE)" }
+    $particleDll = "$scriptsOut\scripts\particle.dll"
+    if (-not (Test-Path $particleDll)) { Fail "Script-Output fehlt: $particleDll" }
 }
 
 Write-Host "==> Server (self-contained, win-x64)"
@@ -26,24 +35,19 @@ dotnet publish "$PSScriptRoot\Client\Client.csproj" `
     -o "$out\Client"
 if ($LASTEXITCODE -ne 0) { Fail "Client publish fehlgeschlagen (exit $LASTEXITCODE)" }
 
-Write-Host "==> Seede root world.db"
+Write-Host "==> Seede root world.db (frisch)"
+Remove-Item $srcDb -ErrorAction SilentlyContinue
 dotnet run --project "$PSScriptRoot\Server\Server.csproj" -- --seed
 if ($LASTEXITCODE -ne 0) { Fail "Server --seed fehlgeschlagen (exit $LASTEXITCODE)" }
+if (-not (Test-Path $srcDb)) { Fail "world.db wurde nicht erstellt: $srcDb" }
 
-Write-Host "==> Kopiere world.db"
-$srcDb = "$PSScriptRoot\world.db"
+Write-Host "==> Kompiliere Scripts (dev)"
+CompileScripts $srcDb "$PSScriptRoot\compiled-scripts"
+
+Write-Host "==> Kopiere world.db und kompiliere Scripts (publish)"
 $dstDb = "$out\Server\world.db"
-if (-not (Test-Path $srcDb)) { Fail "world.db nicht gefunden: $srcDb" }
 Copy-Item $srcDb $dstDb -Force
-
-Write-Host "==> Kompiliere Scripts"
-$scriptsOut = "$out\Server\compiled-scripts"
-dotnet run --project "$PSScriptRoot\ScriptCompiler\ScriptCompiler.csproj" `
-    -c Release -- $dstDb $scriptsOut
-if ($LASTEXITCODE -ne 0) { Fail "ScriptCompiler fehlgeschlagen (exit $LASTEXITCODE)" }
-
-$particleDll = "$scriptsOut\scripts\particle.dll"
-if (-not (Test-Path $particleDll)) { Fail "Script-Output fehlt: $particleDll" }
+CompileScripts $dstDb "$out\Server\compiled-scripts"
 
 Write-Host ""
 Write-Host "Fertig. Output: $out" -ForegroundColor Green
