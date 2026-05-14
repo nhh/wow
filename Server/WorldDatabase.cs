@@ -18,8 +18,17 @@ public sealed class WorldDatabase : IDisposable
     public float  GoViewRadius  { get; private set; }
     public string ScriptsFolder { get; set; } = "";
 
-    public static string DefaultPath =>
-        Path.Combine(AppContext.BaseDirectory, "world.db");
+    public static string DefaultPath
+    {
+        get
+        {
+            // Walk up from binary directory until we find the solution root (.sln file)
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null && dir.GetFiles("*.sln").Length == 0)
+                dir = dir.Parent;
+            return Path.Combine(dir?.FullName ?? AppContext.BaseDirectory, "world.db");
+        }
+    }
 
     public WorldDatabase(string? path = null)
     {
