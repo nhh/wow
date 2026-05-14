@@ -15,8 +15,10 @@ public class InputHandler
     private uint  _tick;
     private bool  _wasSpacePressed;
 
-    private const float ReconcileHardSnap = 10f;
-    private const float MoveSpeed         = 5f;   // Stage 4: replaced by SConfigSnapshot
+    private const float ReconcileHardSnap  = 3f;    // hard snap only for large divergence
+    private const float ReconcileBlendRate = 15f;   // correction speed: 15× error per second
+    private const float ReconcileDeadzone  = 0.02f; // below 2cm: don't correct
+    private const float MoveSpeed          = 5f;    // Stage 4: replaced by SConfigSnapshot
     private const float Gravity           = 20f;
     private const float JumpSpeed         = 9f;
 
@@ -95,19 +97,31 @@ public class InputHandler
             Jump     = jump,
         });
 
-        // XZ reconciliation: hard-snap on extreme divergence
-        foreach (var p in _interp.Players)
+        // XZ reconciliation against latest server snapshot (no interpolation delay)
+        if (_interp.TryGetLatestSelf(out var server))
         {
-            if (p.PlayerId != _interp.MyPlayerId) continue;
-            float ex = LocalX - p.X, ez = LocalZ - p.Z;
-            float drift = MathF.Sqrt(ex * ex + ez * ez);
-            if (!_posInitialized || drift > ReconcileHardSnap)
+            if (!_posInitialized)
             {
-                LocalX = p.X;
-                LocalZ = p.Z;
+                LocalX = server.X;
+                LocalZ = server.Z;
                 _posInitialized = true;
             }
-            break;
+            else
+            {
+                float ex = LocalX - server.X, ez = LocalZ - server.Z;
+                float driftSq = ex * ex + ez * ez;
+                if (driftSq > ReconcileHardSnap * ReconcileHardSnap)
+                {
+                    LocalX = server.X;
+                    LocalZ = server.Z;
+                }
+                else if (driftSq > ReconcileDeadzone * ReconcileDeadzone)
+                {
+                    float alpha = Math.Min(1f, ReconcileBlendRate * (float)dt);
+                    LocalX += (server.X - LocalX) * alpha;
+                    LocalZ += (server.Z - LocalZ) * alpha;
+                }
+            }
         }
     }
 }

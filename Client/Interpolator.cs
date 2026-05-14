@@ -16,6 +16,16 @@ public class Interpolator
     public double SnapshotAgeMs =>
         (Stopwatch.GetTimestamp() - _lastSnapshotTick) * 1000.0 / Stopwatch.Frequency;
 
+    // Latest received own-player snapshot — no interpolation delay, used for reconciliation
+    private PlayerSnapshot _latestSelf;
+    private bool           _hasSelf;
+    private readonly object _selfLock = new();
+
+    public bool TryGetLatestSelf(out PlayerSnapshot snap)
+    {
+        lock (_selfLock) { snap = _latestSelf; return _hasSelf; }
+    }
+
 #if DEBUG
     private int _updateCount;
 #endif
@@ -23,6 +33,14 @@ public class Interpolator
     public void UpdatePlayers(ReadOnlySpan<PlayerSnapshot> snaps)
     {
         _players.Push(snaps);
+        uint myId = MyPlayerId;
+        if (myId != 0)
+            foreach (var s in snaps)
+                if (s.PlayerId == myId)
+                {
+                    lock (_selfLock) { _latestSelf = s; _hasSelf = true; }
+                    break;
+                }
 #if DEBUG
         if (++_updateCount % 40 == 0)
             foreach (var s in snaps)

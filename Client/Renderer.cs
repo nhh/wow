@@ -150,19 +150,17 @@ public class Renderer(Interpolator interpolator)
         if (_inputHandler is null) return;
 
         float drift = 0;
+        if (interpolator.TryGetLatestSelf(out var self))
+        {
+            float dx = _inputHandler.LocalX - self.X;
+            float dz = _inputHandler.LocalZ - self.Z;
+            drift = MathF.Sqrt(dx * dx + dz * dz);
+        }
         var others = new System.Text.StringBuilder();
         foreach (var p in interpolator.Players)
         {
-            if (p.PlayerId == interpolator.MyPlayerId)
-            {
-                float dx = _inputHandler.LocalX - p.X;
-                float dz = _inputHandler.LocalZ - p.Z;
-                drift = MathF.Sqrt(dx * dx + dz * dz);
-            }
-            else
-            {
+            if (p.PlayerId != interpolator.MyPlayerId)
                 others.Append($" | p{p.PlayerId}=({p.X:F1},{p.Z:F1})");
-            }
         }
 
         double ageMs = interpolator.SnapshotAgeMs;

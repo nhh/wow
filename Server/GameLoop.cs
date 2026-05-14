@@ -127,45 +127,50 @@ public class GameLoop(LiteNetServer server, WorldDatabase db)
 
             foreach (var entity in sessions)
             {
-                float dx    = entity.X - observer.X;
-                float dz    = entity.Z - observer.Z;
-                float distSq = dx * dx + dz * dz;
+                bool isSelf = entity.PlayerId == observer.PlayerId;
 
-                // squared-distance pre-cull: FOV bias can only increase effective distance
-                if (distSq > _playerViewRadiusSq && distSq > 0.000001f) continue;
-
-                float effectDist;
-                if (distSq < 0.000001f)
+                if (!isSelf)
                 {
-                    effectDist = 0f;
+                    float dx     = entity.X - observer.X;
+                    float dz     = entity.Z - observer.Z;
+                    float distSq = dx * dx + dz * dz;
+
+                    if (distSq > _playerViewRadiusSq && distSq > 0.000001f) continue;
+
+                    float effectDist;
+                    if (distSq < 0.000001f)
+                    {
+                        effectDist = 0f;
+                    }
+                    else
+                    {
+                        float rawDist   = MathF.Sqrt(distSq);
+                        float dot       = observerSin * (dx / rawDist) + observerCos * (dz / rawDist);
+                        float fovFactor = (dot + 1f) / 2f;
+                        effectDist      = rawDist / (0.3f + 0.7f * fovFactor);
+                    }
+
+                    if (effectDist > _playerViewRadius) continue;
+
+                    float score    = 1f - effectDist / _playerViewRadius;
+                    int   interval = score > 0.7f ? 1 : score > 0.3f ? 4 : 20;
+
+                    var  key     = (observer.PlayerId, entity.PlayerId);
+                    _sendState.TryGetValue(key, out var state);
+                    uint elapsed = _tick - state.LastSentTick;
+
+                    if (elapsed < (uint)interval) continue;
+
+                    if (interval > 1 && state.LastSentTick > 0)
+                    {
+                        float predX = state.LastSentX + state.LastSentVX * elapsed * Framing.TickDelta;
+                        float predZ = state.LastSentZ + state.LastSentVZ * elapsed * Framing.TickDelta;
+                        float errSq = (entity.X - predX) * (entity.X - predX)
+                                    + (entity.Z - predZ) * (entity.Z - predZ);
+                        if (errSq < _drThresholdSq) continue;
+                    }
                 }
-                else
-                {
-                    float rawDist   = MathF.Sqrt(distSq);
-                    float dot       = observerSin * (dx / rawDist) + observerCos * (dz / rawDist);
-                    float fovFactor = (dot + 1f) / 2f;
-                    effectDist      = rawDist / (0.3f + 0.7f * fovFactor);
-                }
-
-                if (effectDist > _playerViewRadius) continue;
-
-                float score    = 1f - effectDist / _playerViewRadius;
-                int   interval = score > 0.7f ? 1 : score > 0.3f ? 4 : 20;
-
-                var  key     = (observer.PlayerId, entity.PlayerId);
-                _sendState.TryGetValue(key, out var state);
-                uint elapsed = _tick - state.LastSentTick;
-
-                if (elapsed < (uint)interval) continue;
-
-                if (interval > 1 && state.LastSentTick > 0)
-                {
-                    float predX = state.LastSentX + state.LastSentVX * elapsed * Framing.TickDelta;
-                    float predZ = state.LastSentZ + state.LastSentVZ * elapsed * Framing.TickDelta;
-                    float errSq = (entity.X - predX) * (entity.X - predX)
-                                + (entity.Z - predZ) * (entity.Z - predZ);
-                    if (errSq < _drThresholdSq) continue;
-                }
+                // isSelf: always send — client needs own position every tick for reconciliation
 
                 float yawNorm = entity.Yaw % MathF.Tau;
                 if (yawNorm < 0f) yawNorm += MathF.Tau;
@@ -178,7 +183,7 @@ public class GameLoop(LiteNetServer server, WorldDatabase db)
                     Z        = (short)(entity.Z * 100f),
                     Yaw      = (byte)(yawNorm / MathF.Tau * 256f),
                 };
-                _sendState[key] = new SendState
+                _sendState[(observer.PlayerId, entity.PlayerId)] = new SendState
                 {
                     LastSentTick = _tick,
                     LastSentX    = entity.X,         LastSentZ  = entity.Z,
