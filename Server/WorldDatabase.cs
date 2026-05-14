@@ -1,5 +1,6 @@
 using System.Globalization;
 using Microsoft.Data.Sqlite;
+using Shared;
 using Shared.Scripts;
 
 namespace Server;
@@ -181,41 +182,48 @@ public sealed class WorldDatabase : IDisposable
         return ScriptLoader.CreateInstance<IParticleScript>(type);
     }
 
-    public GameObjectInstance[] LoadGameObjects()
+    public GameObjectGroup[] LoadGameObjects()
     {
-        var defs      = new List<(uint id, float x, float y, float z, float yaw, string scriptName)>();
-        var typeCache = new Dictionary<string, Type>(); // scriptName → compiled Type (shared per unique script)
-
+        // Pass 1: load all defs, group by script_name
+        var byScript = new Dictionary<string, List<GameObjectState>>();
         using var cmd = _conn.CreateCommand();
         cmd.CommandText = "SELECT id, x, y, z, yaw, script_name FROM game_object_defs";
         using var r = cmd.ExecuteReader();
         while (r.Read())
-            defs.Add(((uint)r.GetInt64(0), (float)r.GetDouble(1), (float)r.GetDouble(2),
-                      (float)r.GetDouble(3), (float)r.GetDouble(4), r.GetString(5)));
-
-        if (defs.Count == 0) return [];
-
-        var instances = new List<GameObjectInstance>(defs.Count);
-        foreach (var (id, x, y, z, yaw, scriptName) in defs)
         {
-            if (!typeCache.TryGetValue(scriptName, out var type))
+            string scriptName = r.GetString(5);
+            if (!byScript.ContainsKey(scriptName))
+                byScript[scriptName] = [];
+            byScript[scriptName].Add(new GameObjectState
             {
-                var dllPath = Path.Combine(ScriptsFolder, Path.ChangeExtension(scriptName, ".dll"));
-                if (!File.Exists(dllPath))
-                {
-                    Console.WriteLine($"[db] warning: {dllPath} not found, skipping GO {id}");
-                    continue;
-                }
-                type = ScriptLoader.LoadType<Shared.Scripts.IGameObjectScript>(dllPath);
-                typeCache[scriptName] = type;
-                Console.WriteLine($"[db] loaded {scriptName} ({dllPath})");
-            }
-            instances.Add(new GameObjectInstance(id, x, y, z, yaw,
-                ScriptLoader.CreateInstance<Shared.Scripts.IGameObjectScript>(type)));
+                Id  = (uint)r.GetInt64(0),
+                X   = (float)r.GetDouble(1),
+                Y   = (float)r.GetDouble(2),
+                Z   = (float)r.GetDouble(3),
+                Yaw = (float)r.GetDouble(4),
+            });
         }
 
-        Console.WriteLine($"[db] {instances.Count} game object(s), {typeCache.Count} unique script(s)");
-        return instances.ToArray();
+        if (byScript.Count == 0) return [];
+
+        // Pass 2: load one DLL + create one script instance per unique script_name
+        var groups = new List<GameObjectGroup>(byScript.Count);
+        foreach (var (scriptName, states) in byScript)
+        {
+            var dllPath = Path.Combine(ScriptsFolder, Path.ChangeExtension(scriptName, ".dll"));
+            if (!File.Exists(dllPath))
+            {
+                Console.WriteLine($"[db] warning: {dllPath} not found, skipping {states.Count} GO(s)");
+                continue;
+            }
+            var type   = ScriptLoader.LoadType<Shared.Scripts.IGameObjectScript>(dllPath);
+            var script = ScriptLoader.CreateInstance<Shared.Scripts.IGameObjectScript>(type);
+            groups.Add(new GameObjectGroup(script, states.ToArray()));
+            Console.WriteLine($"[db] group '{scriptName}': {states.Count} instance(s)");
+        }
+
+        Console.WriteLine($"[db] {groups.Sum(g => g.States.Length)} game object(s) in {groups.Count} group(s)");
+        return groups.ToArray();
     }
 
     public void Dispose() => _conn.Dispose();

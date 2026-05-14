@@ -7,12 +7,12 @@ using Shared;
 
 namespace Server;
 
-public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectInstance[] gameObjects)
+public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectGroup[] groups)
 {
     private readonly ParticleSystem      _particles        = new(db.ParticleCount, db.LoadParticleScript());
     private readonly PlayerSnapshotQ[]   _playerQSnapsBuf  = new PlayerSnapshotQ[64];
     private readonly ParticleSnapshot[]  _particleSnapsBuf = new ParticleSnapshot[db.ParticleCount];
-    private readonly GameObjectSnapshot[] _goSnapsBuf       = new GameObjectSnapshot[gameObjects.Length];
+    private readonly GameObjectSnapshot[] _goSnapsBuf       = new GameObjectSnapshot[groups.Sum(g => g.States.Length)];
     private readonly Session[]          _sessionsBuf      = new Session[256];
     private readonly float _moveSpeed        = db.MoveSpeed;
     private readonly float _jumpSpeed        = db.JumpSpeed;
@@ -117,8 +117,8 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectInstance
 
         float t = _tick * Framing.TickDelta;
         _particles.Update(_tick);
-        foreach (var go in gameObjects)
-            go.Tick(_tick, t);
+        foreach (var group in groups)
+            group.Tick(_tick, t);
 
         int playerSnapSize   = Marshal.SizeOf<PlayerSnapshotQ>();
         int particleSnapSize = Marshal.SizeOf<ParticleSnapshot>();
@@ -201,23 +201,23 @@ public class GameLoop(LiteNetServer server, WorldDatabase db, GameObjectInstance
             // Game objects: per-observer distance cull (go_view_radius from game_config).
             // Particles have no IDs so indices must be stable — no culling there.
             int goVisibleCount = 0;
-            for (int i = 0; i < gameObjects.Length; i++)
-            {
-                var go = gameObjects[i];
-                float goDx = go.X - observer.X;
-                float goDz = go.Z - observer.Z;
-                if (goDx * goDx + goDz * goDz > _goViewRadiusSq) continue;
-                float yawNorm = go.Yaw % MathF.Tau;
-                if (yawNorm < 0f) yawNorm += MathF.Tau;
-                _goSnapsBuf[goVisibleCount++] = new GameObjectSnapshot
+            foreach (var group in groups)
+                foreach (ref var go in group.States.AsSpan())
                 {
-                    Id  = go.Id,
-                    X   = (short)(go.X * 100f),
-                    Y   = (short)(go.Y * 100f),
-                    Z   = (short)(go.Z * 100f),
-                    Yaw = (byte)(yawNorm / MathF.Tau * 256f),
-                };
-            }
+                    float goDx = go.X - observer.X;
+                    float goDz = go.Z - observer.Z;
+                    if (goDx * goDx + goDz * goDz > _goViewRadiusSq) continue;
+                    float yawNorm = go.Yaw % MathF.Tau;
+                    if (yawNorm < 0f) yawNorm += MathF.Tau;
+                    _goSnapsBuf[goVisibleCount++] = new GameObjectSnapshot
+                    {
+                        Id  = go.Id,
+                        X   = (short)(go.X * 100f),
+                        Y   = (short)(go.Y * 100f),
+                        Z   = (short)(go.Z * 100f),
+                        Yaw = (byte)(yawNorm / MathF.Tau * 256f),
+                    };
+                }
 
             int worldLen    = playerCount      > 0 ? 4 + playerCount      * playerSnapSize   : 0;
             int particleLen = particleCount    > 0 ? 4 + particleCount    * particleSnapSize : 0;
