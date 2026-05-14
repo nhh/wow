@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 $out = "$PSScriptRoot\publish"
 
-Write-Host "==> Server (NativeAOT, win-x64)"
+Write-Host "==> Server (self-contained, win-x64)"
 dotnet publish "$PSScriptRoot\Server\Server.csproj" `
     -c Release `
     -r win-x64 `
@@ -25,8 +25,22 @@ dotnet publish "$PSScriptRoot\ScriptCompiler\ScriptCompiler.csproj" `
     -o "$out\ScriptCompiler"
 if (-not $?) { exit 1 }
 
+Write-Host "==> Copying world.db"
+$srcDb = "$PSScriptRoot\world.db"
+$dstDb = "$out\Server\world.db"
+if (Test-Path $srcDb) {
+    Copy-Item $srcDb $dstDb -Force
+} else {
+    Write-Warning "world.db not found at $srcDb — skipping copy"
+}
+
+if (Test-Path $dstDb) {
+    Write-Host "==> Compiling scripts"
+    & "$out\ScriptCompiler\ScriptCompiler.exe" $dstDb "$out\Server\compiled-scripts"
+    if (-not $?) { exit 1 }
+} else {
+    Write-Warning "No world.db in server output — skipping script compilation"
+}
+
 Write-Host ""
 Write-Host "Done. Output: $out"
-Write-Host ""
-Write-Host "Next step: run ScriptCompiler to compile scripts before starting the server:"
-Write-Host "  $out\ScriptCompiler\ScriptCompiler.exe <world.db> <server-dir>\compiled-scripts"
